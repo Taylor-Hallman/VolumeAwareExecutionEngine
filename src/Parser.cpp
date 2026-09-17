@@ -4,6 +4,9 @@
 #include <limits>
 #include <sstream>
 #include <charconv>
+#include <print>
+
+#include "data/GCMD_1/Trade.h"
 
 static constexpr int IGNORE{ 14 };
 static constexpr int NUM_FIELDS{ 9 };

@@ -3,6 +3,7 @@
 #include <cstdint>
 
 struct ExecReport {
+    static constexpr uint16_t SIZE{ 50u };
     uint64_t client_order_id;
     uint64_t ts_ns;
     uint8_t status; // 0=ACK, 1=FILL, 2=PARTIAL, 3=REJECT
