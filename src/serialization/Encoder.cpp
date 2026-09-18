@@ -1,5 +1,7 @@
 #include "Encoder.h"
 
+#include <algorithm>
+
 #include "../data/GCMD_1/FrameHeader.h"
 
 namespace {
@@ -49,8 +51,9 @@ std::vector<std::byte> Encode(const Quote& quote) {
     append_le(data, header.msg_type);
     append_le(data, header.version);
 
-    for (auto i{0uz}; i < quote.symbol.size(); ++i)
-        append_le(data, quote.symbol[i]);
+    std::ranges::for_each(quote.symbol, [&data](auto c) {
+        data.push_back(static_cast<std::byte>(c));
+    });
     append_le(data, quote.ts_ns);
     append_le(data, quote.bid_qty);
     append_le(data, quote.bid_px);
@@ -90,8 +93,9 @@ std::vector<std::byte> Encode(const Trade& trade) {
     append_le(data, header.msg_type);
     append_le(data, header.version);
 
-    for (auto i{0uz}; i < trade.symbol.size(); ++i)
-        append_le(data, trade.symbol[i]);
+    std::ranges::for_each(trade.symbol, [&data](auto c) {
+        data.push_back(static_cast<std::byte>(c));
+    });
     append_le(data, trade.ts_ns);
     append_le(data, trade.qty);
     append_le(data, trade.px);
@@ -114,8 +118,9 @@ std::vector<std::byte> Encode(const NewOrder& newOrder) {
     append_le(data, header.version);
 
     append_le(data, newOrder.client_order_id);
-    for (auto i{0uz}; i < newOrder.symbol.size(); ++i)
-        append_le(data, newOrder.symbol[i]);
+    std::ranges::for_each(newOrder.symbol, [&data](auto c) {
+        data.push_back(static_cast<std::byte>(c));
+    });
     append_le(data, newOrder.status);
     append_le(data, newOrder.ts_ns);
     append_le(data, newOrder.trade_id);
