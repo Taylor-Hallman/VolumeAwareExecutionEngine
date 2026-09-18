@@ -14,4 +14,7 @@ add_executable(VolumeAwareExecutionEngine main.cpp
         src/data/GCOE_1/NewOrder.h
         src/data/GCOE_1/ExecReport.h
         src/serialization/Encoder.cpp
-        src/serialization/Encoder.h)
+        src/serialization/Encoder.h
+        src/serialization/Decoder.cpp
+        src/serialization/Decoder.h
+        src/serialization/MsgType.h)

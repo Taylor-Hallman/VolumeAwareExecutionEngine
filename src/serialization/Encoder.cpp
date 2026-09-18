@@ -3,17 +3,7 @@
 #include <algorithm>
 
 #include "../data/GCMD_1/FrameHeader.h"
-
-namespace {
-    enum MsgType : uint8_t {
-        QUOTE=1,
-        TRADE=2,
-        HEARTBEAT=3,
-        SESSION_CONTROL=4,
-        NEW_ORDER=10,
-        EXEC_REPORT=11
-    };
-}
+#include "MsgType.h"
 
 // Enforce little-endianness
 template <std::integral T>
