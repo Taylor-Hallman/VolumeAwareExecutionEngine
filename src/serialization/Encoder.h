@@ -1,5 +1,6 @@
 #pragma once
 
+#include <span>
 #include <vector>
 
 #include "../data/GCMD_1/Heartbeat.h"
@@ -9,9 +10,9 @@
 #include "../data/GCOE_1/ExecReport.h"
 #include "../data/GCOE_1/NewOrder.h"
 
-std::vector<std::byte> Encode(const Heartbeat& hb);
-std::vector<std::byte> Encode(const Quote& quote);
-std::vector<std::byte> Encode(const SessionControl& sc);
-std::vector<std::byte> Encode(const Trade& trade);
-std::vector<std::byte> Encode(const ExecReport& report);
-std::vector<std::byte> Encode(const NewOrder& newOrder);
+size_t Encode(const Heartbeat& hb, std::span<std::byte> dest);
+size_t Encode(const Quote& quote, std::span<std::byte> dest);
+size_t Encode(const SessionControl& sc, std::span<std::byte> dest);
+size_t Encode(const Trade& trade, std::span<std::byte> dest);
+size_t Encode(const ExecReport& report, std::span<std::byte> dest);
+size_t Encode(const NewOrder& newOrder, std::span<std::byte> dest);
