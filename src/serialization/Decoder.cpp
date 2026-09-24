@@ -40,6 +40,8 @@ DecodeResult Decode(const std::span<const std::byte> data) {
         case HEARTBEAT: {
             if (data.size() < FrameHeader::SIZE + Heartbeat::SIZE)
                 return NoOp;
+            if (header.body_len != Heartbeat::SIZE)
+                return NoOp;
 
             return DecodeResult{
                 .message = Heartbeat{ read_le<uint64_t>(it, data_end) },
@@ -49,6 +51,8 @@ DecodeResult Decode(const std::span<const std::byte> data) {
         break;
         case QUOTE: {
             if (data.size() < FrameHeader::SIZE + Quote::SIZE)
+                return NoOp;
+            if (header.body_len != Quote::SIZE)
                 return NoOp;
 
             std::array<char, SYMBOL_SIZE> symbol{};
@@ -76,6 +80,8 @@ DecodeResult Decode(const std::span<const std::byte> data) {
         case SESSION_CONTROL: {
             if (data.size() < FrameHeader::SIZE + SessionControl::SIZE)
                 return NoOp;
+            if (header.body_len != SessionControl::SIZE)
+                return NoOp;
 
             SessionControl sc{
                 .ts_ns = read_le<uint64_t>(it, data_end),
@@ -89,6 +95,8 @@ DecodeResult Decode(const std::span<const std::byte> data) {
         } break;
         case TRADE: {
             if (data.size() < FrameHeader::SIZE + Trade::SIZE)
+                return NoOp;
+            if (header.body_len != Trade::SIZE)
                 return NoOp;
 
             std::array<char, SYMBOL_SIZE> symbol{};
@@ -114,6 +122,8 @@ DecodeResult Decode(const std::span<const std::byte> data) {
         } break;
         case NEW_ORDER: {
             if (data.size() < FrameHeader::SIZE + NewOrder::SIZE)
+                return NoOp;
+            if (header.body_len != NewOrder::SIZE)
                 return NoOp;
 
             auto client_order_id{ read_le<uint64_t>(it, data_end) };
@@ -143,6 +153,8 @@ DecodeResult Decode(const std::span<const std::byte> data) {
         } break;
         case EXEC_REPORT: {
             if (data.size() < FrameHeader::SIZE + ExecReport::SIZE)
+                return NoOp;
+            if (header.body_len != ExecReport::SIZE)
                 return NoOp;
 
             ExecReport report{

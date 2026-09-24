@@ -14,7 +14,7 @@ static constexpr int NUM_FIELDS{ 9 };
 static constexpr uint64_t SESSION_START_NS =
     (9ull * 3600 + 30ull * 60) * 1'000'000'000ull; // 9:30:00.000 in ns-since-midnight
 
-static uint64_t parse_time_to_ns_since_open(const std::string_view ts) {
+uint64_t parseTimeToNsSinceOpen(const std::string_view ts) {
     int hh{}, mm{}, ss{}, ms{};
 
     std::from_chars(ts.data(),      ts.data() + 2,  hh);
@@ -30,7 +30,7 @@ static uint64_t parse_time_to_ns_since_open(const std::string_view ts) {
     return total_ns - SESSION_START_NS;
 }
 
-static int64_t parse_fixed_point_price(const std::string& s) {
+int64_t parseFixedPointPrice(const std::string& s) {
     auto dot = s.find('.');
     std::string intPart = (dot == std::string::npos) ? s : s.substr(0, dot);
     std::string fracPart = (dot == std::string::npos) ? "" : s.substr(dot + 1);
@@ -40,8 +40,8 @@ static int64_t parse_fixed_point_price(const std::string& s) {
     return whole * 10000 + frac;
 }
 
-std::vector<std::variant<Quote, Trade>> parseQuotesAndTrades() {
-    std::ifstream inputFile("Quotes_and_Trades.csv");
+std::vector<std::variant<Quote, Trade>> parseQuotesAndTrades(const std::string_view inputFileName) {
+    std::ifstream inputFile(inputFileName.data());
 
     std::vector<std::variant<Quote, Trade>> data;
 
@@ -60,15 +60,15 @@ std::vector<std::variant<Quote, Trade>> parseQuotesAndTrades() {
         // fields[0]=Timestamp, [1]=Type, [2]=Symbol, [3]=BidPrice, [4]=BidQty,
         // [5]=AskPrice, [6]=AskQty, [7]=Price, [8]=Qty
 
-        uint64_t ts_ns{ parse_time_to_ns_since_open(fields[0]) };
+        uint64_t ts_ns{ parseTimeToNsSinceOpen(fields[0]) };
         size_t n = std::min(12uz, fields[2].size());
         std::array<char, 12> symbol{};
         std::copy_n(fields[2].data(), n, symbol.data());
 
         if (fields[1] == "Q") {
-            int64_t bidPrice{ parse_fixed_point_price(fields[3]) };
+            int64_t bidPrice{ parseFixedPointPrice(fields[3]) };
             uint32_t bidQty{ static_cast<uint32_t>(std::stoi(fields[4])) };
-            int64_t askPrice{ parse_fixed_point_price(fields[5]) };
+            int64_t askPrice{ parseFixedPointPrice(fields[5]) };
             uint32_t askQty{ static_cast<uint32_t>(std::stoi(fields[6])) };
 
             data.emplace_back(Quote{
@@ -82,7 +82,7 @@ std::vector<std::variant<Quote, Trade>> parseQuotesAndTrades() {
         }
 
         else if (fields[1] == "T") {
-            int64_t price{ parse_fixed_point_price(fields[7] )};
+            int64_t price{ parseFixedPointPrice(fields[7] )};
             uint32_t quantity{ static_cast<uint32_t>(std::stoi(fields[8])) };
 
             data.emplace_back(Trade{
