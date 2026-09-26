@@ -16,6 +16,9 @@ target_link_libraries(VolumeAwareExecutionEngine PRIVATE VAEE_lib)
 
 target_include_directories(VAEE_lib PUBLIC src)
 
+add_subdirectory(clients/md_client)
+add_subdirectory(clients/oe_client)
+
 include(FetchContent)
 FetchContent_Declare(
         googletest
