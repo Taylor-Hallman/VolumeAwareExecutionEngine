@@ -12,7 +12,7 @@ static void append_le(std::span<std::byte>& buf, T value, size_t& i) {
     if (buf.size() - i < sizeof(T))
         throw std::invalid_argument("Incorrect data size");
 
-    for (int j{0}; i < sizeof(T); ++i, ++j)
+    for (int j{0}; j < sizeof(T); ++i, ++j)
         buf[i] = static_cast<std::byte>((value >> (8 * j)) & 0xFF);
 }
 
