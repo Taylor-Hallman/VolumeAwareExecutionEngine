@@ -3,7 +3,7 @@
 #include <array>
 
 struct NewOrder {
-    static constexpr uint16_t SIZE{ 30u };
+    static constexpr uint16_t SIZE{ 50u };
     uint64_t client_order_id;
     std::array<char, 12> symbol;
     char status; // 'A' for accepted, 'R' for rejected

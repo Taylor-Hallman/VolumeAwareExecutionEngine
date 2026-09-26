@@ -43,6 +43,10 @@ int64_t parseFixedPointPrice(const std::string& s) {
 std::vector<std::variant<Quote, Trade>> parseQuotesAndTrades(const std::string_view inputFileName) {
     std::ifstream inputFile(inputFileName.data());
 
+    if (inputFile.fail()) {
+        throw std::runtime_error("Could not open input file");
+    }
+
     std::vector<std::variant<Quote, Trade>> data;
 
     for (int i{}; i < IGNORE && inputFile.good(); ++i) {

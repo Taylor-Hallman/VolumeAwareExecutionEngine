@@ -439,10 +439,6 @@ TEST(SerializationTest, Decode_LessThanFrameHeader_ReportsIncomplete) {
 }
 
 // --- CSV parser tests ---
-// NOTE: assumes parseFixedPointPrice and parseTimeToNsSinceOpen
-// have been exposed (moved out of static/internal linkage) for direct testing.
-// If left static, these would need to be rewritten as indirect assertions
-// against parseQuotesAndTrades()'s output instead.
 
 TEST(ParserTest, FixedPointPrice_TwoDecimalDigits) {
     EXPECT_EQ(parseFixedPointPrice("87.37"), 873700);
@@ -476,11 +472,6 @@ TEST(ParserTest, TimeToNsSinceOpen_CrossesHourAndMinuteBoundary) {
 }
 
 TEST(ParserTest, ParseQuotesAndTrades_EndToEnd) {
-    // This assumes parseQuotesAndTrades() can be pointed at a test fixture
-    // file/path rather than a hardcoded "Quotes_and_Trades.csv" — if the
-    // filename is currently hardcoded inside the function, this test can't
-    // be written as-is without either parameterizing the function to accept
-    // a path, or dropping a small fixture CSV at the hardcoded path.
     auto data = parseQuotesAndTrades("Quotes_and_Trades.csv");
 
     ASSERT_FALSE(data.empty());
