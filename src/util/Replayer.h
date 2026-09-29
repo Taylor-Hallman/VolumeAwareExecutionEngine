@@ -8,7 +8,6 @@
 #include "data/GCMD_1/Quote.h"
 #include "data/GCMD_1/Trade.h"
 
-
 template<typename Callback>
 void replayEvents(const std::vector<std::variant<Quote, Trade>>& events, Callback&& onEvent) {
     auto programStart{ std::chrono::steady_clock::now() };

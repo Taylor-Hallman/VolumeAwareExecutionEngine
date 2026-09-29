@@ -17,6 +17,7 @@ static bool serveClient(int clientSockfd) {
     while (true) {
         std::array<std::byte, 1024> buf{};
         ssize_t bytesReceived = recv(clientSockfd, buf.data(), buf.size(), 0);
+        std::println("Received {} bytes", bytesReceived);
         if (bytesReceived <= 0) {
             if (bytesReceived < 0)
                 success = false;

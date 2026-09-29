@@ -8,6 +8,8 @@
 
 #include <CLI/CLI.hpp>
 
+#include "util/NetworkHelper.h"
+
 int main(int argc, char* argv[]) {
     CLI::App app{"order-entry client"};
 
@@ -24,12 +26,17 @@ int main(int argc, char* argv[]) {
 
     auto events{ parseQuotesAndTrades(csv) };
 
+    int sockfd{ createSocket(host.data(), port) };
+
     replayEvents(events, overloaded{
-        [](const Quote& q) {
+        [&sockfd](const Quote& q) {
             std::vector<std::byte> buf(FrameHeader::SIZE + Quote::SIZE);
             Encode(q, buf);
-            // TODO: send buf over socket, M2
+
+            sendAll(sockfd, buf);
         },
         [](const Trade&) {} // ignore
     });
+
+    close(sockfd);
 }

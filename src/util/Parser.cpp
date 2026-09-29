@@ -40,6 +40,7 @@ int64_t parseFixedPointPrice(const std::string& s) {
     return whole * 10000 + frac;
 }
 
+// Deliberately unoptimized as this is not in a hot path
 std::vector<std::variant<Quote, Trade>> parseQuotesAndTrades(const std::string_view inputFileName) {
     std::ifstream inputFile(inputFileName.data());
 
