@@ -5,24 +5,13 @@
 #include "serialization/Encoder.h"
 #include "serialization/Decoder.h"
 
-namespace {
-    enum MessageTypeIdx : size_t {
-        HEARTBEAT = 0uz,
-        QUOTE,
-        SESSION_CONTROL,
-        TRADE,
-        EXEC_REPORT,
-        NEW_ORDER
-    };
-}
-
 TEST(SerializationTest, EncodeDecode_Uint64_ZeroAndMax) {
     std::vector<std::byte> buf(FrameHeader::SIZE + Heartbeat::SIZE);
     for (uint64_t val : {UINT64_C(0), UINT64_MAX}) {
         Heartbeat hb{ .ts_ns = val };
         Encode(hb, std::span(buf));
         auto result = Decode(std::span(buf));
-        EXPECT_EQ(std::get<HEARTBEAT>(result.message.value()).ts_ns, val);
+        EXPECT_EQ(std::get<Heartbeat>(result.message.value()).ts_ns, val);
     }
 }
 

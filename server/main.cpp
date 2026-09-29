@@ -8,7 +8,9 @@
 #include <thread>
 #include <vector>
 
-#include "../src/util/NetworkHelper.h"
+#include <CLI/CLI.hpp>
+
+#include "util/NetworkHelper.h"
 
 static bool serveClient(int clientSockfd) {
     bool success{ true };
@@ -46,25 +48,63 @@ static int createListeningSocket(int port) {
     return sockfd;
 }
 
-int main () {
-    int mdSockfd{ createListeningSocket(MD_PORT) };
-    int oeSockfd{ createListeningSocket(OE_PORT) };
+int main (int argc, char* argv[]) {
+    CLI::App app{"slipstream: volume-aware execution engine"};
+
+    std::string symbol;
+    app.add_option("--symbol", symbol, "symbol")->required();
+
+    uint32_t maxQty;
+    app.add_option("--max-quantity", maxQty, "max quantity")->required();
+
+    double participationCap;
+    app.add_option("--participation-cap", participationCap, "participation capacity")->required();
+
+    uint64_t vwapWindow_ms;
+    app.add_option("--vwap-window-ms", vwapWindow_ms, "vwap window ms")->required();
+
+    double bandBps;
+    app.add_option("--band-bps", bandBps, "band bps")->required();
+
+    std::string mdHost;
+    app.add_option("--md-host", mdHost, "md host")->required();
+    int mdPort;
+    app.add_option("--md-port", mdPort, "md port")->required();
+
+    std::string oeHost;
+    app.add_option("--oe-host", oeHost, "oe host")->required();
+    int oePort;
+    app.add_option("--oe-port", oePort, "oe port")->required();
+
+    std::string transport;
+    app.add_option("--transport", transport, "transport type")->required();
+
+    CLI11_PARSE(app, argc, argv);
+
+    int mdSockfd{ createListeningSocket(mdPort) };
+    int oeSockfd{ createListeningSocket(oePort) };
 
     std::thread mdThread([mdSockfd] {
         sockaddr_in clientAddr{};
         socklen_t len{ sizeof(clientAddr) };
+
+        std::println("Waiting for MD Client...");
         int clientSockfd{ accept(mdSockfd, reinterpret_cast<sockaddr*>(&clientAddr), &len) };
         if (clientSockfd < 0)
             throw std::runtime_error("accept failed");
+        std::println("Connected to MD Client");
         serveClient(clientSockfd);
     });
 
     std::thread oeThread([oeSockfd] {
         sockaddr_in clientAddr{};
         socklen_t len{ sizeof(clientAddr) };
+
+        std::println("Waiting for OE Client...");
         int clientSockfd{ accept(oeSockfd, reinterpret_cast<sockaddr*>(&clientAddr), &len) };
         if (clientSockfd < 0)
             throw std::runtime_error("accept failed");
+        std::println("Connected to OE Client");
         serveClient(clientSockfd);
     });
 
