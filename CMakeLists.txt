@@ -8,6 +8,7 @@ add_library(VAEE_lib
         src/Parser.cpp
         src/serialization/Decoder.cpp
         src/serialization/Encoder.cpp
+        src/NetworkHelper.cpp
 )
 
 add_executable(VolumeAwareExecutionEngine main.cpp)
@@ -18,6 +19,7 @@ target_include_directories(VAEE_lib PUBLIC src)
 
 add_subdirectory(clients/md_client)
 add_subdirectory(clients/oe_client)
+add_subdirectory(server)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -29,3 +31,9 @@ FetchContent_MakeAvailable(googletest)
 enable_testing()
 
 add_subdirectory(tests)
+
+FetchContent_Declare(
+        cli11
+        URL https://github.com/CLIUtils/CLI11/archive/refs/tags/v2.4.2.zip
+)
+FetchContent_MakeAvailable(cli11)

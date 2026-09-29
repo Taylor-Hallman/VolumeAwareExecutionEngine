@@ -4,7 +4,7 @@
 #include "data/GCMD_1/FrameHeader.h"
 #include "serialization/Encoder.h"
 
-int main() {
+int main(int argc, char* argv[]) {
     auto events{ parseQuotesAndTrades("Quotes_and_Trades.csv") };
 
     replayEvents(events, overloaded{
@@ -12,7 +12,8 @@ int main() {
         [](const Trade& t) {
             std::vector<std::byte> buf(FrameHeader::SIZE + Trade::SIZE);
             Encode(t, buf);
-            // TODO: send buf over socket, M2
+
+
         }
     });
 }
