@@ -8,7 +8,7 @@
 #include <thread>
 #include <vector>
 
-#include "NetworkHelper.h"
+#include "../src/util/NetworkHelper.h"
 
 static bool serveClient(int clientSockfd) {
     bool success{ true };

@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <stdexcept>
 
-#include "../data/GCMD_1/FrameHeader.h"
+#include "data/GCMD_1/FrameHeader.h"
 #include "MsgType.h"
 
 using BytesIterator = std::span<const std::byte>::iterator;
