@@ -1,5 +1,7 @@
 add_executable(VAEE_tests
-       SerializationTests.cpp
+        SerializationTests.cpp
+        ParserTests.cpp
+        NetworkingTests.cpp
 )
 
 target_link_libraries(VAEE_tests

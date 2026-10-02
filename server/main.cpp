@@ -3,16 +3,41 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <cstring>
+#include <mutex>
 #include <print>
 #include <stdexcept>
 #include <thread>
+#include <variant>
 #include <vector>
 
 #include <CLI/CLI.hpp>
 
-#include "util/NetworkHelper.h"
+#include "serialization/Decoder.h"
+#include "util/BytesParser.h"
 
-static bool serveClient(int clientSockfd) {
+static L1State state;
+static std::mutex stateMutex;
+
+static bool serveMDClient(int clientSockfd, const std::array<char, 12>& symbol) {
+    bool success{ true };
+    std::vector<std::byte> accumBuf;
+    while (true) {
+        std::array<std::byte, 1024> buf{};
+        ssize_t bytesReceived = recv(clientSockfd, buf.data(), buf.size(), 0);
+        std::println("Received {} bytes", bytesReceived);
+        if (bytesReceived <= 0) {
+            if (bytesReceived < 0)
+                success = false;
+            break;
+        }
+
+        processQuoteBytes(accumBuf, std::span(buf.begin(), bytesReceived), symbol, state, stateMutex);
+    }
+    close(clientSockfd);
+    return success;
+}
+
+static bool serveOEClient(int clientSockfd, const std::array<char, 12>& symbol) {
     bool success{ true };
     while (true) {
         std::array<std::byte, 1024> buf{};
@@ -23,7 +48,6 @@ static bool serveClient(int clientSockfd) {
                 success = false;
             break;
         }
-        // TODO: Decode
     }
     close(clientSockfd);
     return success;
@@ -85,7 +109,7 @@ int main (int argc, char* argv[]) {
     int mdSockfd{ createListeningSocket(mdPort) };
     int oeSockfd{ createListeningSocket(oePort) };
 
-    std::thread mdThread([mdSockfd] {
+    std::thread mdThread([mdSockfd, &symbol] {
         sockaddr_in clientAddr{};
         socklen_t len{ sizeof(clientAddr) };
 
@@ -94,10 +118,13 @@ int main (int argc, char* argv[]) {
         if (clientSockfd < 0)
             throw std::runtime_error("accept failed");
         std::println("Connected to MD Client");
-        serveClient(clientSockfd);
+        std::array<char, 12> symbolArr{};
+        size_t n = std::min(12uz, symbol.size());
+        std::copy_n(symbolArr.data(), n, symbol.begin());
+        serveMDClient(clientSockfd, symbolArr);
     });
 
-    std::thread oeThread([oeSockfd] {
+    std::thread oeThread([oeSockfd, &symbol] {
         sockaddr_in clientAddr{};
         socklen_t len{ sizeof(clientAddr) };
 
@@ -106,7 +133,10 @@ int main (int argc, char* argv[]) {
         if (clientSockfd < 0)
             throw std::runtime_error("accept failed");
         std::println("Connected to OE Client");
-        serveClient(clientSockfd);
+        std::array<char, 12> symbolArr{};
+        size_t n = std::min(12uz, symbol.size());
+        std::copy_n(symbolArr.data(), n, symbol.begin());
+        serveOEClient(clientSockfd, symbolArr);
     });
 
     mdThread.join();

@@ -5,10 +5,11 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(VAEE_lib
-        src/util/Parser.cpp
+        src/util/CSVParser.cpp
         src/serialization/Decoder.cpp
         src/serialization/Encoder.cpp
         src/util/NetworkHelper.cpp
+        src/util/BytesParser.cpp
 )
 
 add_executable(VolumeAwareExecutionEngine main.cpp)
