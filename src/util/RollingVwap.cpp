@@ -24,7 +24,7 @@ void RollingVwap::addTick(uint64_t ts_ns, int64_t px, uint32_t qty) {
     m_ticks[m_tail] = TradeTick{ ts_ns, px, qty };
     m_tail = (m_tail + 1) & (CAPACITY - 1);
 
-    m_sumPxQty += px * qty;
+    m_sumPxQty += static_cast<__int128>(px) * static_cast<__int128>(qty);
     m_sumQty += qty;
 
     ++m_count;
