@@ -15,7 +15,7 @@ void RollingVwap::addTick(uint64_t ts_ns, int64_t px, uint32_t qty) {
     if (m_count == CAPACITY) {
         // buffer full: must evict the oldest entry by capacity pressure,
         // even though it may still be within the time window
-        m_sumPxQty -= m_ticks[m_head].px * m_ticks[m_head].qty;
+        m_sumPxQty -= static_cast<__int128>(m_ticks[m_head].px) * static_cast<__int128>(m_ticks[m_head].qty);
         m_sumQty -= m_ticks[m_head].qty;
         m_head = (m_head + 1) & (CAPACITY - 1);
         --m_count;
