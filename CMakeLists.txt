@@ -10,6 +10,8 @@ add_library(VAEE_lib
         src/serialization/Encoder.cpp
         src/util/NetworkHelper.cpp
         src/util/BytesParser.cpp
+        src/util/RollingVwap.cpp
+        src/util/RollingVwap.h
 )
 
 add_executable(VolumeAwareExecutionEngine main.cpp)

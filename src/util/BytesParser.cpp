@@ -23,5 +23,6 @@ void processQuoteBytes(std::vector<std::byte>& accumBuf,
         }
         accumBuf.erase(accumBuf.begin(), accumBuf.begin() + static_cast<ptrdiff_t>(res.bytesConsumed));
         res = Decode(std::span(accumBuf));
+        ++L1State::quotesObserved;
     }
 }
