@@ -16,7 +16,6 @@
 #include "util/BytesParser.h"
 
 static L1State state;
-static std::mutex stateMutex;
 
 static bool serveMDClient(int clientSockfd, const std::array<char, 12>& symbol) {
     bool success{ true };
@@ -31,7 +30,7 @@ static bool serveMDClient(int clientSockfd, const std::array<char, 12>& symbol) 
             break;
         }
 
-        processQuoteBytes(accumBuf, std::span(buf.begin(), bytesReceived), symbol, state, stateMutex);
+        processQuoteBytes(accumBuf, std::span(buf.begin(), bytesReceived), symbol, state);
     }
     close(clientSockfd);
     return success;
