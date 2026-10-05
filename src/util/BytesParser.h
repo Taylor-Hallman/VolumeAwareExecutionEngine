@@ -9,7 +9,7 @@
 #include "serialization/Decoder.h"
 
 template<typename Handler>
-void processBytes(std::vector<std::byte>& accumBuf, std::span<const std::byte> incomingBytes, Handler&& onMessage) {
+void processBytes(std::vector<std::byte> &accumBuf, std::span<const std::byte> incomingBytes, Handler &&onMessage) {
     accumBuf.insert(accumBuf.end(), incomingBytes.begin(), incomingBytes.end());
 
     std::ptrdiff_t totalBytesConsumed{0z};
@@ -31,7 +31,14 @@ void processQuoteBytes(std::vector<std::byte> &accumBuf,
                        const std::array<char, 12> &symbol,
                        L1State &state);
 
+template<std::size_t VwapCapacity>
 void processTradeBytes(std::vector<std::byte> &accumBuf,
                        std::span<const std::byte> incomingBytes,
                        const std::array<char, 12> &symbol,
-                       RollingVwap &rollingVwap);
+                       RollingVwap<VwapCapacity> &rollingVwap) {
+    processBytes(accumBuf, incomingBytes, [&symbol, &rollingVwap](const Message &msg) {
+        if (const auto *t{std::get_if<Trade>(&msg)})
+            if (symbol == t->symbol)
+                rollingVwap.addTick(t->ts_ns, t->px, t->qty);
+    });
+}

@@ -2,6 +2,7 @@ add_executable(VAEE_tests
         SerializationTests.cpp
         ParserTests.cpp
         NetworkingTests.cpp
+        RollingVwapTests.cpp
 )
 
 target_link_libraries(VAEE_tests
@@ -11,4 +12,4 @@ target_link_libraries(VAEE_tests
 )
 
 include(GoogleTest)
-gtest_discover_tests(VAEE_tests)
+gtest_discover_tests(VAEE_tests PROPERTIES TIMEOUT 10)
