@@ -15,9 +15,7 @@
 #include "serialization/Decoder.h"
 #include "util/BytesParser.h"
 
-static L1State state;
-
-static bool serveMDClient(int clientSockfd, const std::array<char, 12>& symbol) {
+static bool serveMDClient(const int clientSockfd, const std::array<char, 12>& symbol, L1State& state) {
     bool success{ true };
     std::vector<std::byte> accumBuf;
     while (true) {
@@ -36,8 +34,9 @@ static bool serveMDClient(int clientSockfd, const std::array<char, 12>& symbol) 
     return success;
 }
 
-static bool serveOEClient(int clientSockfd, const std::array<char, 12>& symbol) {
+static bool serveOEClient(const int clientSockfd, const std::array<char, 12>& symbol, RollingVwap<VWAP_CAPACITY>& vwap) {
     bool success{ true };
+    std::vector<std::byte> accumBuf;
     while (true) {
         std::array<std::byte, 1024> buf{};
         ssize_t bytesReceived = recv(clientSockfd, buf.data(), buf.size(), 0);
@@ -47,6 +46,8 @@ static bool serveOEClient(int clientSockfd, const std::array<char, 12>& symbol) 
                 success = false;
             break;
         }
+
+        processTradeBytes(accumBuf, std::span(buf.begin(), bytesReceived), symbol, vwap);
     }
     close(clientSockfd);
     return success;
@@ -105,10 +106,13 @@ int main (int argc, char* argv[]) {
 
     CLI11_PARSE(app, argc, argv);
 
+    RollingVwap<VWAP_CAPACITY> vwap(vwapWindow_ms);
+    L1State state;
+
     int mdSockfd{ createListeningSocket(mdPort) };
     int oeSockfd{ createListeningSocket(oePort) };
 
-    std::thread mdThread([mdSockfd, &symbol] {
+    std::thread mdThread([mdSockfd, &symbol, &state] {
         sockaddr_in clientAddr{};
         socklen_t len{ sizeof(clientAddr) };
 
@@ -120,10 +124,10 @@ int main (int argc, char* argv[]) {
         std::array<char, 12> symbolArr{};
         size_t n = std::min(12uz, symbol.size());
         std::copy_n(symbolArr.data(), n, symbol.begin());
-        serveMDClient(clientSockfd, symbolArr);
+        serveMDClient(clientSockfd, symbolArr, state);
     });
 
-    std::thread oeThread([oeSockfd, &symbol] {
+    std::thread oeThread([oeSockfd, &symbol, &vwap] {
         sockaddr_in clientAddr{};
         socklen_t len{ sizeof(clientAddr) };
 
@@ -135,7 +139,7 @@ int main (int argc, char* argv[]) {
         std::array<char, 12> symbolArr{};
         size_t n = std::min(12uz, symbol.size());
         std::copy_n(symbolArr.data(), n, symbol.begin());
-        serveOEClient(clientSockfd, symbolArr);
+        serveOEClient(clientSockfd, symbolArr, vwap);
     });
 
     mdThread.join();
