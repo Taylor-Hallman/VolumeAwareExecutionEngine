@@ -13,7 +13,7 @@ struct TradeTick {
 static constexpr auto VWAP_CAPACITY{ 65536uz };
 
 template <std::size_t SIZE>
-concept IsPowTwo = std::popcount(SIZE) == 1 && SIZE > 0;
+concept IsPowTwo = std::popcount(SIZE) == 1 && SIZE > 1;
 
 template<std::size_t Capacity>
     requires IsPowTwo<Capacity>

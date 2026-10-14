@@ -14,6 +14,7 @@
 
 #include "serialization/Decoder.h"
 #include "util/BytesParser.h"
+#include "util/FixedPointParser.h"
 
 static bool serveMDClient(const int clientSockfd, const std::array<char, 12>& symbol, L1State& state) {
     bool success{ true };
@@ -82,14 +83,20 @@ int main (int argc, char* argv[]) {
     uint32_t maxQty;
     app.add_option("--max-quantity", maxQty, "max quantity")->required();
 
-    double participationCap;
-    app.add_option("--participation-cap", participationCap, "participation capacity")->required();
+    std::string participationCapStr;
+    app.add_option("--participation-cap", participationCapStr, "participation capacity")->required();
+    if (getFixedPointPrecision(participationCapStr) > 4)
+        throw std::runtime_error("participation cap should have 4 or fewer decimal digits, else it would be truncated");
+    uint64_t participationCap{ parseFixedPoint(participationCapStr) };
 
     uint64_t vwapWindow_ms;
     app.add_option("--vwap-window-ms", vwapWindow_ms, "vwap window ms")->required();
 
-    double bandBps;
-    app.add_option("--band-bps", bandBps, "band bps")->required();
+    std::string bandBpsStr;
+    app.add_option("--band-bps", bandBpsStr, "band bps")->required();
+    if (getFixedPointPrecision(bandBpsStr) > 4)
+        throw std::runtime_error("band bps should have 4 or fewer decimal digits, else it would be truncated");
+    uint64_t bandBps{ parseFixedPoint(bandBpsStr) };
 
     std::string mdHost;
     app.add_option("--md-host", mdHost, "md host")->required();

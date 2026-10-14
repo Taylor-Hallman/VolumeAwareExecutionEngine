@@ -7,6 +7,7 @@
 #include <print>
 
 #include "data/GCMD_1/Trade.h"
+#include "FixedPointParser.h"
 
 static constexpr int IGNORE{ 14 };
 static constexpr int NUM_FIELDS{ 9 };
@@ -28,16 +29,6 @@ uint64_t parseTimeToNsSinceOpen(const std::string_view ts) {
                        + static_cast<uint64_t>(ms) * 1'000'000ull;
 
     return total_ns - SESSION_START_NS;
-}
-
-int64_t parseFixedPointPrice(const std::string& s) {
-    auto dot = s.find('.');
-    std::string intPart = (dot == std::string::npos) ? s : s.substr(0, dot);
-    std::string fracPart = (dot == std::string::npos) ? "" : s.substr(dot + 1);
-    fracPart.resize(4, '0'); // pad or truncate to exactly 4 digits
-    int64_t whole{ std::stoll(intPart) };
-    int64_t frac{ std::stoll(fracPart) };
-    return whole * 10000 + frac;
 }
 
 // Deliberately unoptimized as this is not in a hot path
@@ -71,9 +62,9 @@ std::vector<std::variant<Quote, Trade>> parseQuotesAndTrades(const std::string_v
         std::copy_n(fields[2].data(), n, symbol.data());
 
         if (fields[1] == "Q") {
-            int64_t bidPrice{ parseFixedPointPrice(fields[3]) };
+            int64_t bidPrice{ static_cast<int64_t>(parseFixedPoint(fields[3])) };
             uint32_t bidQty{ static_cast<uint32_t>(std::stoi(fields[4])) };
-            int64_t askPrice{ parseFixedPointPrice(fields[5]) };
+            int64_t askPrice{ static_cast<int64_t>(parseFixedPoint(fields[5])) };
             uint32_t askQty{ static_cast<uint32_t>(std::stoi(fields[6])) };
 
             data.emplace_back(Quote{
@@ -87,7 +78,7 @@ std::vector<std::variant<Quote, Trade>> parseQuotesAndTrades(const std::string_v
         }
 
         else if (fields[1] == "T") {
-            int64_t price{ parseFixedPointPrice(fields[7] )};
+            int64_t price{ parseFixedPoint(fields[7] )};
             uint32_t quantity{ static_cast<uint32_t>(std::stoi(fields[8])) };
 
             data.emplace_back(Trade{
