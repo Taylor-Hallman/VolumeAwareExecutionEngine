@@ -35,7 +35,7 @@ static bool serveMDClient(const int clientSockfd, const std::array<char, 12>& sy
     return success;
 }
 
-static bool serveOEClient(const int clientSockfd, const std::array<char, 12>& symbol, RollingVwap<VWAP_CAPACITY>& vwap) {
+static bool serveOEClient(const int clientSockfd, const std::array<char, 12>& symbol, const L1State& state, RollingVwap<VWAP_CAPACITY>& vwap) {
     bool success{ true };
     std::vector<std::byte> accumBuf;
     while (true) {
@@ -134,7 +134,7 @@ int main (int argc, char* argv[]) {
         serveMDClient(clientSockfd, symbolArr, state);
     });
 
-    std::thread oeThread([oeSockfd, &symbol, &vwap] {
+    std::thread oeThread([oeSockfd, &symbol, &vwap, &state] {
         sockaddr_in clientAddr{};
         socklen_t len{ sizeof(clientAddr) };
 
@@ -146,7 +146,7 @@ int main (int argc, char* argv[]) {
         std::array<char, 12> symbolArr{};
         size_t n = std::min(12uz, symbol.size());
         std::copy_n(symbolArr.data(), n, symbol.begin());
-        serveOEClient(clientSockfd, symbolArr, vwap);
+        serveOEClient(clientSockfd, symbolArr, state, vwap);
     });
 
     mdThread.join();

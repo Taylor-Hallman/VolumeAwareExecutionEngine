@@ -4,6 +4,7 @@
 #include <span>
 #include <vector>
 
+#include "DecisionEngine.h"
 #include "RollingVwap.h"
 #include "data/L1State.h"
 #include "serialization/Decoder.h"
@@ -32,13 +33,24 @@ void processQuoteBytes(std::vector<std::byte> &accumBuf,
                        L1State &state);
 
 template<std::size_t VwapCapacity>
-void processTradeBytes(std::vector<std::byte> &accumBuf,
-                       std::span<const std::byte> incomingBytes,
-                       const std::array<char, 12> &symbol,
-                       RollingVwap<VwapCapacity> &rollingVwap) {
-    processBytes(accumBuf, incomingBytes, [&symbol, &rollingVwap](const Message &msg) {
-        if (const auto *t{std::get_if<Trade>(&msg)})
-            if (symbol == t->symbol)
+std::optional<NewOrder> processTradeBytes(std::vector<std::byte> &accumBuf,
+                                          std::span<const std::byte> incomingBytes,
+                                          const std::array<char, 12> &symbol,
+                                          MarketInfo &marketInfo,
+                                          RollingVwap<VwapCapacity> &rollingVwap) {
+    std::optional<NewOrder> newOrder{std::nullopt};
+    processBytes(accumBuf, incomingBytes, [&](const Message &msg) {
+        if (const auto *t{std::get_if<Trade>(&msg)}) {
+            if (symbol == t->symbol) {
                 rollingVwap.addTick(t->ts_ns, t->px, t->qty);
+
+                marketInfo.vwap = rollingVwap.getVwap();
+                newOrder = judgeTrade(marketInfo, *t);
+                ++marketInfo.market_volume;
+                if (newOrder.value().status == 'A')
+                    ++marketInfo.executed_qty;
+            }
+        }
     });
+    return newOrder;
 }

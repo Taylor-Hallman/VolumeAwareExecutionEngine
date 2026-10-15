@@ -11,5 +11,5 @@ struct L1State {
     int64_t ask_px{};
     uint32_t ask_qty{};
 
-    std::mutex stateMutex;
+    mutable std::mutex stateMutex;
 };

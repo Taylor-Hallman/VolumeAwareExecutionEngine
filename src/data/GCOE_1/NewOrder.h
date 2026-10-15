@@ -4,7 +4,8 @@
 
 struct NewOrder {
     static constexpr uint16_t SIZE{ 50u };
-    uint64_t client_order_id;
+    static inline uint64_t s_next_id{ 0 };
+    uint64_t client_order_id{ s_next_id++ };
     std::array<char, 12> symbol;
     char status; // 'A' for accepted, 'R' for rejected
     uint64_t ts_ns;
