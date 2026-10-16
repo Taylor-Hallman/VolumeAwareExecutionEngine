@@ -72,7 +72,7 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12>& sy
         std::array<std::byte, 1024> buf{};
 
         ssize_t bytesReceived = recv(clientSockfd, buf.data(), buf.size(), 0);
-        std::println("Received {} bytes", bytesReceived);
+        std::println("[SERVER] Received {} bytes", bytesReceived);
         if (bytesReceived <= 0) {
             if (bytesReceived < 0)
                 success = false;
