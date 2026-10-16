@@ -68,4 +68,8 @@ public:
     [[nodiscard]] std::size_t getTickCount() const {
         return m_count;
     }
+
+    [[nodiscard]] uint64_t getWindowNs() const {
+        return m_windowNs;
+    }
 };

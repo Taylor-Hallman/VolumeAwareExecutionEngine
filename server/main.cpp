@@ -12,9 +12,12 @@
 
 #include <CLI/CLI.hpp>
 
+#include "data/GCMD_1/FrameHeader.h"
 #include "serialization/Decoder.h"
+#include "serialization/Encoder.h"
 #include "util/BytesParser.h"
 #include "util/FixedPointParser.h"
+#include "util/NetworkHelper.h"
 
 static bool serveMDClient(const int clientSockfd, const std::array<char, 12>& symbol, L1State& state) {
     bool success{ true };
@@ -35,7 +38,9 @@ static bool serveMDClient(const int clientSockfd, const std::array<char, 12>& sy
     return success;
 }
 
-static bool serveOEClient(const int clientSockfd, const std::array<char, 12>& symbol, const L1State& state, RollingVwap<VWAP_CAPACITY>& vwap) {
+static bool serveOEClient(const int clientSockfd, const std::array<char, 12>& symbol, const L1State& l1State,
+                            RollingVwap<VWAP_CAPACITY>& vwap, SessionState& sessionState,
+                            const DecisionConfig& config, std::chrono::time_point<std::chrono::steady_clock> startTime) {
     bool success{ true };
     std::vector<std::byte> accumBuf;
     while (true) {
@@ -47,8 +52,23 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12>& sy
                 success = false;
             break;
         }
+        L1Snapshot snapshot{};
+        {
+            std::scoped_lock lock(l1State.stateMutex);
+            snapshot.best_ask_px = l1State.ask_px;
+            snapshot.best_bid_px = l1State.bid_px;
+            snapshot.quotesObserved = l1State.quotesObserved;
+        }
 
-        processTradeBytes(accumBuf, std::span(buf.begin(), bytesReceived), symbol, vwap);
+        const auto timeElapsed{ std::chrono::steady_clock::now() - startTime };
+        auto newOrder = processTradeBytes(accumBuf, std::span(buf.begin(), bytesReceived), symbol, snapshot,
+                            sessionState, config, timeElapsed, vwap);
+
+        if (newOrder) {
+            std::vector<std::byte> bytes(FrameHeader::SIZE + NewOrder::SIZE);
+            Encode(newOrder.value(), bytes);
+            sendAll(clientSockfd, bytes);
+        }
     }
     close(clientSockfd);
     return success;
@@ -115,11 +135,19 @@ int main (int argc, char* argv[]) {
 
     RollingVwap<VWAP_CAPACITY> vwap(vwapWindow_ms);
     L1State state;
+    const DecisionConfig config{
+        .band_bps_scaled = bandBps,
+        .participation_cap_scaled = participationCap,
+        .max_qty = maxQty
+    };
+    SessionState sessionState;
 
     int mdSockfd{ createListeningSocket(mdPort) };
     int oeSockfd{ createListeningSocket(oePort) };
 
-    std::thread mdThread([mdSockfd, &symbol, &state] {
+    bool mdClientConnected{ false };
+
+    std::thread mdThread([mdSockfd, &symbol, &state, &mdClientConnected] {
         sockaddr_in clientAddr{};
         socklen_t len{ sizeof(clientAddr) };
 
@@ -128,13 +156,14 @@ int main (int argc, char* argv[]) {
         if (clientSockfd < 0)
             throw std::runtime_error("accept failed");
         std::println("Connected to MD Client");
+        mdClientConnected = true;
         std::array<char, 12> symbolArr{};
         size_t n = std::min(12uz, symbol.size());
         std::copy_n(symbolArr.data(), n, symbol.begin());
         serveMDClient(clientSockfd, symbolArr, state);
     });
 
-    std::thread oeThread([oeSockfd, &symbol, &vwap, &state] {
+    std::thread oeThread([oeSockfd, &symbol, &vwap, &state, &config, &sessionState, &mdClientConnected] {
         sockaddr_in clientAddr{};
         socklen_t len{ sizeof(clientAddr) };
 
@@ -146,7 +175,11 @@ int main (int argc, char* argv[]) {
         std::array<char, 12> symbolArr{};
         size_t n = std::min(12uz, symbol.size());
         std::copy_n(symbolArr.data(), n, symbol.begin());
-        serveOEClient(clientSockfd, symbolArr, state, vwap);
+
+        while (!mdClientConnected); // wait for MD client to connect
+
+        auto timeStart{ std::chrono::steady_clock::now() };
+        serveOEClient(clientSockfd, symbolArr, state, vwap, sessionState, config, timeStart);
     });
 
     mdThread.join();

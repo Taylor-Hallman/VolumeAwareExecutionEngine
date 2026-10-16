@@ -4,7 +4,7 @@
 #include <span>
 #include <vector>
 
-#include "DecisionEngine.h"
+#include "../decision_engine/DecisionEngine.h"
 #include "RollingVwap.h"
 #include "data/L1State.h"
 #include "serialization/Decoder.h"
@@ -36,7 +36,10 @@ template<std::size_t VwapCapacity>
 std::optional<NewOrder> processTradeBytes(std::vector<std::byte> &accumBuf,
                                           std::span<const std::byte> incomingBytes,
                                           const std::array<char, 12> &symbol,
-                                          MarketInfo &marketInfo,
+                                          const L1Snapshot& snapshot,
+                                          SessionState& state,
+                                          const DecisionConfig& config,
+                                          const std::chrono::nanoseconds timeElapsed,
                                           RollingVwap<VwapCapacity> &rollingVwap) {
     std::optional<NewOrder> newOrder{std::nullopt};
     processBytes(accumBuf, incomingBytes, [&](const Message &msg) {
@@ -44,11 +47,14 @@ std::optional<NewOrder> processTradeBytes(std::vector<std::byte> &accumBuf,
             if (symbol == t->symbol) {
                 rollingVwap.addTick(t->ts_ns, t->px, t->qty);
 
-                marketInfo.vwap = rollingVwap.getVwap();
-                newOrder = judgeTrade(marketInfo, *t);
-                ++marketInfo.market_volume;
+                const std::chrono::nanoseconds window{ rollingVwap.getWindowNs() };
+                if (snapshot.quotesObserved < 10 || timeElapsed < window)
+                    return;
+
+                newOrder = judgeTrade(*t, snapshot, state, config, rollingVwap.getVwap());
+                ++state.market_volume;
                 if (newOrder.value().status == 'A')
-                    ++marketInfo.executed_qty;
+                    ++state.executed_qty;
             }
         }
     });

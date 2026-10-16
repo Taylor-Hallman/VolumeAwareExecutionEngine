@@ -10,7 +10,7 @@ add_library(VAEE_lib
         src/serialization/Encoder.cpp
         src/util/NetworkHelper.cpp
         src/util/BytesParser.cpp
-        src/util/DecisionEngine.cpp
+        src/decision_engine/DecisionEngine.cpp
         src/util/FixedPointParser.cpp
         src/util/FixedPointParser.h
 )
