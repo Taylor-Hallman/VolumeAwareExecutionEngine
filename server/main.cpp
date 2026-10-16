@@ -1,6 +1,7 @@
 #include <array>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <unistd.h>
 #include <cstring>
 #include <mutex>
@@ -41,10 +42,35 @@ static bool serveMDClient(const int clientSockfd, const std::array<char, 12>& sy
 static bool serveOEClient(const int clientSockfd, const std::array<char, 12>& symbol, const L1State& l1State,
                             RollingVwap<VWAP_CAPACITY>& vwap, SessionState& sessionState,
                             const DecisionConfig& config, std::chrono::time_point<std::chrono::steady_clock> startTime) {
+    constexpr auto timeoutMs{ 5000 };
     bool success{ true };
     std::vector<std::byte> accumBuf;
+
+    pollfd pfd{};
+    pfd.fd = clientSockfd;
+    pfd.events = POLLIN;
+
     while (true) {
+        int ready{ poll(&pfd, 1, timeoutMs) };
+
+        if (ready < 0) {
+            if (errno == EINTR)
+                continue;
+            throw std::runtime_error("poll failed");
+        }
+        if (ready == 0) {
+            // Timed out after 5 seconds; send a heartbeat
+            auto elapsed{ std::chrono::steady_clock::now() - startTime };
+            const uint64_t ts_ns{ static_cast<uint64_t>(elapsed.count()) };
+            Heartbeat hb{ .ts_ns = ts_ns };
+            std::vector<std::byte> bytes(FrameHeader::SIZE + Heartbeat::SIZE);
+            Encode(hb, bytes);
+            sendAll(clientSockfd, bytes);
+            continue;
+        }
+
         std::array<std::byte, 1024> buf{};
+
         ssize_t bytesReceived = recv(clientSockfd, buf.data(), buf.size(), 0);
         std::println("Received {} bytes", bytesReceived);
         if (bytesReceived <= 0) {
@@ -146,8 +172,9 @@ int main (int argc, char* argv[]) {
     int oeSockfd{ createListeningSocket(oePort) };
 
     bool mdClientConnected{ false };
+    bool oeClientConnected{ false };
 
-    std::thread mdThread([mdSockfd, &symbol, &state, &mdClientConnected] {
+    std::thread mdThread([mdSockfd, &symbol, &state, &mdClientConnected, &oeClientConnected]() {
         sockaddr_in clientAddr{};
         socklen_t len{ sizeof(clientAddr) };
 
@@ -160,10 +187,13 @@ int main (int argc, char* argv[]) {
         std::array<char, 12> symbolArr{};
         size_t n = std::min(12uz, symbol.size());
         std::copy_n(symbolArr.data(), n, symbol.begin());
+
+        while (!oeClientConnected); // wait for OE client to connect
+
         serveMDClient(clientSockfd, symbolArr, state);
     });
 
-    std::thread oeThread([oeSockfd, &symbol, &vwap, &state, &config, &sessionState, &mdClientConnected] {
+    std::thread oeThread([oeSockfd, &symbol, &vwap, &state, &config, &sessionState, &mdClientConnected, &oeClientConnected] {
         sockaddr_in clientAddr{};
         socklen_t len{ sizeof(clientAddr) };
 
@@ -172,6 +202,7 @@ int main (int argc, char* argv[]) {
         if (clientSockfd < 0)
             throw std::runtime_error("accept failed");
         std::println("Connected to OE Client");
+        oeClientConnected = true;
         std::array<char, 12> symbolArr{};
         size_t n = std::min(12uz, symbol.size());
         std::copy_n(symbolArr.data(), n, symbol.begin());
