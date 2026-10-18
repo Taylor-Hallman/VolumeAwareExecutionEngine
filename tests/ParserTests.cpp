@@ -2,23 +2,24 @@
 
 #include "data/GCMD_1/Quote.h"
 #include "util/CSVParser.h"
+#include "util/FixedPointParser.h"
 
 // --- CSV parser tests ---
 
 TEST(ParserTest, FixedPointPrice_TwoDecimalDigits) {
-    EXPECT_EQ(parseFixedPointPrice("87.37"), 873700);
+    EXPECT_EQ(parseFixedPoint("87.37"), 873700);
 }
 
 TEST(ParserTest, FixedPointPrice_WholeNumberNoDecimal) {
-    EXPECT_EQ(parseFixedPointPrice("100"), 1000000);
+    EXPECT_EQ(parseFixedPoint("100"), 1000000);
 }
 
 TEST(ParserTest, FixedPointPrice_FourDecimalDigits) {
-    EXPECT_EQ(parseFixedPointPrice("101.2500"), 1012500);
+    EXPECT_EQ(parseFixedPoint("101.2500"), 1012500);
 }
 
 TEST(ParserTest, FixedPointPrice_SingleDecimalDigit) {
-    EXPECT_EQ(parseFixedPointPrice("34.2"), 342000);
+    EXPECT_EQ(parseFixedPoint("34.2"), 342000);
 }
 
 TEST(ParserTest, TimeToNsSinceOpen_ExactlyAnchor) {

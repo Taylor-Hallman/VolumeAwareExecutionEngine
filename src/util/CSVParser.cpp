@@ -78,7 +78,7 @@ std::vector<std::variant<Quote, Trade>> parseQuotesAndTrades(const std::string_v
         }
 
         else if (fields[1] == "T") {
-            int64_t price{ parseFixedPoint(fields[7] )};
+            int64_t price{ static_cast<int64_t>(parseFixedPoint(fields[7] )) };
             uint32_t quantity{ static_cast<uint32_t>(std::stoi(fields[8])) };
 
             data.emplace_back(Trade{

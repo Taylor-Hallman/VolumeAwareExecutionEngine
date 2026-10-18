@@ -46,15 +46,15 @@ std::optional<NewOrder> processTradeBytes(std::vector<std::byte> &accumBuf,
         if (const auto *t{std::get_if<Trade>(&msg)}) {
             if (symbol == t->symbol) {
                 rollingVwap.addTick(t->ts_ns, t->px, t->qty);
+                state.market_volume += t->qty;
 
                 const std::chrono::nanoseconds window{ rollingVwap.getWindowNs() };
                 if (snapshot.quotesObserved < 10 || timeElapsed < window)
                     return;
 
                 newOrder = judgeTrade(*t, snapshot, state, config, rollingVwap.getVwap());
-                ++state.market_volume;
                 if (newOrder.value().status == 'A')
-                    ++state.executed_qty;
+                    state.executed_qty += t->qty;
             }
         }
     });

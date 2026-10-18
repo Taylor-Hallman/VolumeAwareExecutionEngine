@@ -3,6 +3,7 @@ add_executable(VAEE_tests
         ParserTests.cpp
         NetworkingTests.cpp
         RollingVwapTests.cpp
+        DecisionEngineTests.cpp
 )
 
 target_link_libraries(VAEE_tests

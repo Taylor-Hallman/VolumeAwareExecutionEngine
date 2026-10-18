@@ -1,3 +1,5 @@
+#include <chrono>
+
 #include "data/L1State.h"
 #include "data/GCMD_1/FrameHeader.h"
 #include "data/GCMD_1/Quote.h"
@@ -108,18 +110,25 @@ TEST(OeServerTest, AccumulatesAcrossFragmentedChunks) {
     };
     std::vector<std::byte> encoded(FrameHeader::SIZE + Trade::SIZE);
     const size_t total = Encode(t, std::span(encoded));
+    SessionState sessionState{};
+
+    using namespace std::chrono;
 
     // Feed it in three arbitrarily-sized fragments, none of which align to
     // the message boundary, simulating worst-case TCP chunking.
     constexpr size_t chunk1 = 10;
     constexpr size_t chunk2 = 20;
-    processTradeBytes(accumBuf, std::span(encoded.data(), chunk1), symbol, vwap);
+    processTradeBytes(accumBuf, std::span(encoded.data(), chunk1), symbol, L1Snapshot{},
+        sessionState, DecisionConfig{}, 1ns, vwap);
     EXPECT_EQ(vwap.getTickCount(), 0) << "Should not have decoded yet with only " << chunk1 << " bytes";
 
-    processTradeBytes(accumBuf, std::span(encoded.data() + chunk1, chunk2), symbol, vwap);
+    processTradeBytes(accumBuf, std::span(encoded.data() + chunk1, chunk2), symbol, L1Snapshot{},
+        sessionState, DecisionConfig{}, 1ns, vwap);
     EXPECT_EQ(vwap.getTickCount(), 0) << "Should not have decoded yet with only " << (chunk1 + chunk2) << " bytes";
 
-    processTradeBytes(accumBuf, std::span(encoded.data() + chunk1 + chunk2, total - chunk1 - chunk2), symbol, vwap);
+    processTradeBytes(accumBuf,
+        std::span(encoded.data() + chunk1 + chunk2, total - chunk1 - chunk2), symbol, L1Snapshot{},
+        sessionState, DecisionConfig{}, 1ns, vwap);
     EXPECT_EQ(vwap.getTickCount(), 1) << "Should have decoded once all bytes arrived";
 
     EXPECT_TRUE(accumBuf.empty()) << "Buffer should be fully drained after a complete decode";
@@ -142,8 +151,12 @@ TEST(OeServerTest, HandlesMultipleMessagesInOneChunk) {
     combined.insert(combined.end(), buf1.begin(), buf1.end());
     combined.insert(combined.end(), buf2.begin(), buf2.end());
 
+    SessionState sessionState{};
+    using namespace std::chrono;
+
     // Both messages arrive in a single "recv()" worth of bytes
-    processTradeBytes(accumBuf, std::span(combined), symbol, vwap);
+    processTradeBytes(accumBuf, std::span(combined), symbol, L1Snapshot{}, sessionState,
+        DecisionConfig{}, 1ns, vwap);
 
     // Vwap should contain both trades
     EXPECT_EQ(vwap.getTickCount(), 2);
@@ -160,7 +173,11 @@ TEST(OeServerTest, IgnoresQuotesForOtherSymbols) {
     std::vector<std::byte> encoded(FrameHeader::SIZE + Trade::SIZE);
     Encode(t, std::span(encoded));
 
-    processTradeBytes(accumBuf, std::span(encoded), mySymbol, vwap);
+    SessionState sessionState{};
+    using namespace std::chrono;
+
+    processTradeBytes(accumBuf, std::span(encoded), mySymbol, L1Snapshot{}, sessionState,
+        DecisionConfig{}, 1ns, vwap);
 
     EXPECT_EQ(vwap.getTickCount(), 0) << "Trade for a different symbol should not update vwap";
 }
@@ -174,6 +191,10 @@ TEST(OeServerTest, IgnoresNonTradeMessages) {
     std::vector<std::byte> encoded(FrameHeader::SIZE + Quote::SIZE);
     Encode(q, std::span(encoded));
 
-    processTradeBytes(accumBuf, std::span(encoded), symbol, vwap);
+    SessionState sessionState{};
+    using namespace std::chrono;
+
+    processTradeBytes(accumBuf, std::span(encoded), symbol, L1Snapshot{}, sessionState,
+        DecisionConfig{}, 1ns, vwap);
     EXPECT_EQ(vwap.getTickCount(), 0) << "Message that isn't a trade should not update state";
 }

@@ -10,6 +10,9 @@ NewOrder judgeTrade(const Trade& trade, const L1Snapshot& snapshot, const Sessio
         .qty = trade.qty
     };
 
+    if (vwap <= 0)
+        return rejected;
+
     // reject if quantity exceeds the max quantity
     if (trade.qty > config.max_qty)
         return rejected;
