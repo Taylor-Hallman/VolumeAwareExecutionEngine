@@ -9,9 +9,11 @@
 #include "data/GCMD_1/Trade.h"
 
 template<typename Callback>
-void replayEvents(const std::vector<std::variant<Quote, Trade>>& events, Callback&& onEvent) {
+void replayEvents(const std::vector<std::variant<Quote, Trade>>& events, std::atomic<bool>& cancelFlag, Callback&& onEvent) {
     auto programStart{ std::chrono::steady_clock::now() };
     for (const auto& event : events) {
+        if (cancelFlag.load(std::memory_order_relaxed))
+            break;
         uint64_t ts_ns = std::visit([](const auto& e) {
             return e.ts_ns;
         }, event);

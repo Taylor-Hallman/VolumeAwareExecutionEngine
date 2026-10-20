@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mutex>
+#include <print>
 #include <span>
 #include <vector>
 
@@ -49,13 +50,19 @@ std::optional<NewOrder> processTradeBytes(std::vector<std::byte> &accumBuf,
                 state.market_volume += t->qty;
 
                 const std::chrono::nanoseconds window{ rollingVwap.getWindowNs() };
-                if (snapshot.quotesObserved < 10 || timeElapsed < window)
+                if (snapshot.quotesObserved < 10 || timeElapsed < window) {
+                    std::println("Trade skipped: Warm-up window not passed. Quotes observed: {0}, time elapsed: {1}, window: {2}",
+                        snapshot.quotesObserved, timeElapsed.count(), window.count());
                     return;
+                }
 
                 newOrder = judgeTrade(*t, snapshot, state, config, rollingVwap.getVwap());
                 if (newOrder.value().status == 'A')
                     state.executed_qty += t->qty;
             }
+        }
+        else {
+            std::println("[WARN] Expected Trade, but received malformed input");
         }
     });
     return newOrder;

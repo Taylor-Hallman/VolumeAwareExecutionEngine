@@ -2,6 +2,7 @@
 #include "util/CSVParser.h"
 #include "../../src/util/Replayer.h"
 #include "data/GCMD_1/FrameHeader.h"
+#include "data/GCMD_1/SessionControl.h"
 #include "serialization/Encoder.h"
 #include <print>
 
@@ -30,46 +31,73 @@ int main(int argc, char *argv[]) {
 
     int sockfd{createSocket(host.data(), port)};
 
-    bool shutdown{ false };
+    std::atomic shutdownFlag{ false };
 
     std::thread receiver{
         [&] {
             std::vector<std::byte> accumBuf;
-            while (!shutdown) {
+            while (!shutdownFlag.load(std::memory_order_relaxed)) {
                 std::array<std::byte, 1024> buf{};
 
                 ssize_t bytesReceived = recv(sockfd, buf.data(), buf.size(), 0);
                 if (bytesReceived <= 0) {
                     if (bytesReceived < 0) {
-                        // error
+                        if (errno == EINTR)
+                            continue;
+                        std::println("recv failed: {}", strerror(errno));
+                        shutdownFlag.store(true, std::memory_order_relaxed);
                     }
                     break;
                 }
 
                 processBytes(accumBuf, std::span(buf.begin(), bytesReceived),
-                    [](const Message& msg) {
+                    [&shutdownFlag](const Message& msg) {
                     if (const auto* hb{ std::get_if<Heartbeat>(&msg) }) {
-                        std::println("[OE CLIENT] Received heartbeat at timestamp {}", hb->ts_ns);
+                        std::println("Received heartbeat at timestamp {}", hb->ts_ns);
                     }
                     else if (const auto* newOrder{ std::get_if<NewOrder>(&msg) }) {
-                        std::string statusStr = newOrder->status == 'A' ? "accepted" : "rejected";
-                        std::println("[OE CLIENT] Received Order: Trade {0} {1}", newOrder->trade_id, statusStr);
+                        if (newOrder->status == 'A') {
+                            std::string sideStr = newOrder->side == 'B' ? "Buy" : "Sell";
+                            std::println("Trade {0} accepted at side {1}", newOrder->trade_id, sideStr);
+                        }
+                        else
+                            std::println("Trade {} rejected", newOrder->trade_id);
+                    }
+                    else if (const auto* sc{ std::get_if<SessionControl>(&msg) }) {
+                        switch (sc->state) {
+                            case OPEN:
+                                std::println("Received command: OPEN");
+                                break;
+                            case HALT:
+                                std::println("Received command: HALT");
+                                break;
+                            case CLOSE:
+                                std::println("Received command: CLOSE");
+                                shutdownFlag.store(true, std::memory_order_relaxed);
+                                break;
+                            default:
+                                std::println("Received unknown command");
+                        }
                     }
                 });
             }
         }
     };
 
-    replayEvents(events, overloaded{
+    replayEvents(events, shutdownFlag, overloaded{
                      [](const Quote &) {
                      }, // ignore
-                     [&sockfd](const Trade &t) {
+                     [&sockfd, &shutdownFlag](const Trade &t) {
                          std::vector<std::byte> buf(FrameHeader::SIZE + Trade::SIZE);
                          Encode(t, buf);
 
-                         sendAll(sockfd, buf);
+                         if (!sendAll(sockfd, buf)) {
+                             std::println("Could not connect to server. Closing...");
+                             shutdownFlag.store(true, std::memory_order_relaxed);
+                         }
                      }
                  });
-    shutdown = true;
+    shutdownFlag.store(true, std::memory_order_relaxed);
+    shutdown(sockfd, SHUT_RD); // wake receiver thread if it's waiting on recv
     receiver.join();
 }

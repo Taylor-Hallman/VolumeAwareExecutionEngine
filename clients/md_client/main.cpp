@@ -7,6 +7,7 @@
 #include "serialization/Encoder.h"
 
 #include <CLI/CLI.hpp>
+#include <print>
 
 #include "util/NetworkHelper.h"
 
@@ -28,12 +29,17 @@ int main(int argc, char* argv[]) {
 
     int sockfd{ createSocket(host.data(), port) };
 
-    replayEvents(events, overloaded{
-        [&sockfd](const Quote& q) {
+    std::atomic shutdown{ false };
+
+    replayEvents(events, shutdown, overloaded{
+        [&sockfd, &shutdown](const Quote& q) {
             std::vector<std::byte> buf(FrameHeader::SIZE + Quote::SIZE);
             Encode(q, buf);
 
-            sendAll(sockfd, buf);
+            if (!sendAll(sockfd, buf)) {
+                std::println("Could not connect to server. Closing...");
+                shutdown.store(true, std::memory_order_relaxed);
+            }
         },
         [](const Trade&) {} // ignore
     });

@@ -2,6 +2,12 @@
 
 #include <cstdint>
 
+enum SessionControlState : uint8_t {
+    OPEN = 0,
+    HALT = 1,
+    CLOSE = 2
+};
+
 struct SessionControl {
     static constexpr uint16_t SIZE{ 9u };
     uint64_t ts_ns;
