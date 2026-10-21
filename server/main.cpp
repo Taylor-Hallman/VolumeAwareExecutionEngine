@@ -28,16 +28,16 @@ static bool serveMDClient(const int clientSockfd, const std::array<char, 12> &sy
                           std::stop_token st) {
     bool success{true};
     std::vector<std::byte> accumBuf;
+    std::array<std::byte, 1024> receivedBuf{};
     while (!st.stop_requested()) {
-        std::array<std::byte, 1024> buf{};
-        ssize_t bytesReceived = recv(clientSockfd, buf.data(), buf.size(), 0);
+        ssize_t bytesReceived = recv(clientSockfd, receivedBuf.data(), receivedBuf.size(), 0);
         if (bytesReceived <= 0) {
             if (bytesReceived < 0)
                 success = false;
             break;
         }
 
-        processQuoteBytes(accumBuf, std::span(buf.begin(), bytesReceived), symbol, state);
+        processQuoteBytes(accumBuf, std::span(receivedBuf.begin(), bytesReceived), symbol, state);
     }
     close(clientSockfd);
     return success;
@@ -50,6 +50,7 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
     constexpr auto timeoutMs{5000};
     bool success{true};
     std::vector<std::byte> accumBuf;
+    accumBuf.reserve(4096);
 
     pollfd pfd{};
     pfd.fd = clientSockfd;
@@ -57,26 +58,33 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
 
     bool isOpen{};
 
+    using namespace std::chrono;
+    std::vector<uint64_t> tickToOrderTimes;
+    std::vector<NewOrder> acceptedOrders;
+
+    std::array<std::byte, 1024> receivedBuf{};
+
     while (true) {
+        time_point<steady_clock> decisionStart, decisionEnd;
         if (st.stop_requested()) {
             SessionControl sc{
                 .ts_ns = getTimestamp(startTime),
                 .state = CLOSE
             };
-            std::vector<std::byte> bytes(FrameHeader::SIZE + SessionControl::SIZE);
+            std::array<std::byte, FrameHeader::SIZE + SessionControl::SIZE> bytes{};
             Encode(sc, bytes);
             if (!sendAll(clientSockfd, bytes))
                 std::println("Failed to send close command to OE client");
             break;
         }
 
-        if (const bool bl{ open.load(std::memory_order_relaxed) }; bl != isOpen) {
+        if (const bool bl{open.load(std::memory_order_relaxed)}; bl != isOpen) {
             const uint8_t state = bl ? OPEN : HALT;
             SessionControl sc{
                 .ts_ns = getTimestamp(startTime),
                 .state = state
             };
-            std::vector<std::byte> bytes(FrameHeader::SIZE + SessionControl::SIZE);
+            std::array<std::byte, FrameHeader::SIZE + SessionControl::SIZE> bytes{};
             Encode(sc, bytes);
             if (!sendAll(clientSockfd, bytes)) {
                 std::string stateStr = state == OPEN ? "open" : "halt";
@@ -88,27 +96,24 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
         int ready{poll(&pfd, 1, timeoutMs)};
 
         if (ready < 0) {
-            if (errno == EINTR) {
-                std::println("interrupt");
+            if (errno == EINTR)
                 continue;
-            }
             std::println("poll failed");
             break;
         }
         if (ready == 0) {
             // Timed out after 5 seconds; send a heartbeat
-            std::println("Timed out, sending heartbeat");
-            Heartbeat hb{.ts_ns = getTimestamp(startTime) };
-            std::vector<std::byte> bytes(FrameHeader::SIZE + Heartbeat::SIZE);
+            Heartbeat hb{.ts_ns = getTimestamp(startTime)};
+            std::array<std::byte, FrameHeader::SIZE + Heartbeat::SIZE> bytes{};
             Encode(hb, bytes);
             if (!sendAll(clientSockfd, bytes))
                 std::println("Failed to send heartbeat to OE client");
             continue;
         }
 
-        std::array<std::byte, 1024> buf{};
 
-        ssize_t bytesReceived = recv(clientSockfd, buf.data(), buf.size(), 0);
+        ssize_t bytesReceived = recv(clientSockfd, receivedBuf.data(), receivedBuf.size(), 0);
+        decisionStart = steady_clock::now();
         if (bytesReceived <= 0) {
             if (bytesReceived < 0)
                 success = false;
@@ -122,23 +127,78 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
             snapshot.quotesObserved = l1State.quotesObserved;
         }
 
-        const auto timeElapsed{std::chrono::steady_clock::now() - startTime};
-        auto newOrder = processTradeBytes(accumBuf, std::span(buf.begin(), bytesReceived), symbol, snapshot,
-                                          sessionState, config, timeElapsed, vwap);
-
-        if (newOrder) {
+        auto onOrderReceived = [&](const NewOrder& order) {
             if (isOpen) {
-                std::println("Sending new order...");
-                std::vector<std::byte> bytes(FrameHeader::SIZE + NewOrder::SIZE);
-                Encode(newOrder.value(), bytes);
+                std::array<std::byte, FrameHeader::SIZE + NewOrder::SIZE> bytes{};
+                Encode(order, bytes);
+                decisionEnd = steady_clock::now();
+                tickToOrderTimes.push_back(duration_cast<nanoseconds>(decisionEnd - decisionStart).count());
                 if (!sendAll(clientSockfd, bytes))
                     std::println("Failed to send new order to OE client");
-            }
-            else
+                else {
+                    if (order.status == 'A')
+                        acceptedOrders.push_back(order);
+                    std::println("New order sent");
+                }
+            } else
                 std::println("No new order sent (halted)");
-        }
+        };
+
+        const auto timeElapsed{steady_clock::now() - startTime};
+        processTradeBytes(accumBuf, std::span(receivedBuf.begin(), bytesReceived), symbol, snapshot,
+            sessionState, config, timeElapsed, vwap, onOrderReceived);
     }
     close(clientSockfd);
+
+    // Print execution report
+    std::println();
+    std::println("=== SLIPSTREAM EXECUTION REPORT ===");
+
+    std::string symbolStr(symbol.begin(), std::ranges::find(symbol, '\0'));
+    std::println("symbol\t\t\t\t{}", symbolStr);
+
+    std::println("market qty\t\t\t{}", sessionState.market_volume);
+
+    std::println("executed qty\t\t{} ({:.2f}%)", sessionState.executed_qty,
+        static_cast<double>(sessionState.executed_qty) / static_cast<double>(sessionState.market_volume) * 100.0);
+
+    long double avgFill{
+        sessionState.executed_qty == 0 ? 0
+        : static_cast<double>(sessionState.executed_notional) / static_cast<double>(sessionState.executed_qty)
+    };
+    std::println("avg fill price\t\t{:.2f}", avgFill);
+
+    int64_t sessionVwap{
+        sessionState.executed_qty == 0 ? 0
+        : static_cast<int64_t>((sessionState.market_notional + sessionState.market_volume / 2) / sessionState.market_volume)
+    };
+    std::println("session VWAP\t\t{}", sessionVwap);
+
+    if (sessionState.executed_qty == 0 || sessionVwap == 0)
+        std::println("slippage vs VWAP\tn/a");
+    else {
+        __int128 cost{
+            (sessionState.buy_notional - sessionVwap * sessionState.buy_qty) + (sessionVwap * sessionState.sell_qty - sessionState.sell_notional)
+        };
+        long double slippage{ static_cast<double>(cost * 10'000) / static_cast<double>(sessionVwap * (sessionState.buy_qty + sessionState.sell_qty)) };
+        std::string favorabilityStr = slippage < 0 ? "favorable" : "unfavorable";
+        std::println("slippage vs VWAP\t{:.2f} bps ({})", slippage, favorabilityStr);
+    }
+
+    std::println("participation\t\t{:.2f}% (cap {:.2f}%)",
+        static_cast<double>(sessionState.executed_qty) / static_cast<double>(sessionState.market_volume),
+        static_cast<double>(config.participation_cap_scaled) / 10'000.0
+        );
+
+    std::ranges::sort(tickToOrderTimes);
+    auto n{tickToOrderTimes.size()};
+    uint64_t p50{tickToOrderTimes[(n * 50 + 99) / 100 - 1]};
+    uint64_t p99{tickToOrderTimes[(n * 99 + 99) / 100 - 1]};
+    uint64_t p999{tickToOrderTimes[(n * 999 + 999) / 1000 - 1]};
+    std::println("tick-to-order p50\t{} us", p50 / 1000.0);
+    std::println("tick-to-order p99\t{} us", p99 / 1000.0);
+    std::println("tick-to-order p99.9\t{} us", p999 / 1000.0);
+
     return success;
 }
 
@@ -202,19 +262,19 @@ int main(int argc, char *argv[]) {
     uint64_t bandBps{parseFixedPoint(bandBpsStr)};
 
     RollingVwap<VWAP_CAPACITY> vwap(vwapWindow_ms);
-    L1State state;
+    L1State state{};
     const DecisionConfig config{
         .band_bps_scaled = bandBps,
         .participation_cap_scaled = participationCap,
         .max_qty = maxQty
     };
-    SessionState sessionState;
+    SessionState sessionState{};
 
     int mdSockfd{createListeningSocket(mdPort)};
     int oeSockfd{createListeningSocket(oePort)};
 
-    bool mdClientConnected{false};
-    bool oeClientConnected{false};
+    std::atomic mdClientConnected{false};
+    std::atomic oeClientConnected{false};
 
     std::atomic open{true};
 
@@ -227,12 +287,13 @@ int main(int argc, char *argv[]) {
         if (clientSockfd < 0)
             throw std::runtime_error("accept failed");
         std::println("Connected to MD Client");
-        mdClientConnected = true;
+        mdClientConnected.store(true, std::memory_order_relaxed);
         std::array<char, 12> symbolArr{};
         size_t n = std::min(12uz, symbol.size());
         std::copy_n(symbol.data(), n, symbolArr.begin());
 
-        while (!oeClientConnected); // wait for OE client to connect
+        while (!oeClientConnected.load(std::memory_order_relaxed)) // wait for OE client to connect
+            std::this_thread::yield();
 
         serveMDClient(clientSockfd, symbolArr, state, std::move(st));
     });
@@ -246,12 +307,13 @@ int main(int argc, char *argv[]) {
         if (clientSockfd < 0)
             throw std::runtime_error("accept failed");
         std::println("Connected to OE Client");
-        oeClientConnected = true;
+        oeClientConnected.store(true, std::memory_order_relaxed);
         std::array<char, 12> symbolArr{};
         size_t n = std::min(12uz, symbol.size());
         std::copy_n(symbol.data(), n, symbolArr.begin());
 
-        while (!mdClientConnected); // wait for MD client to connect
+        while (!mdClientConnected.load(std::memory_order_relaxed)) // wait for MD client to connect
+            std::this_thread::yield();
 
         auto timeStart{std::chrono::steady_clock::now()};
         serveOEClient(clientSockfd, symbolArr, state, vwap, sessionState, config, timeStart, std::move(st), open);

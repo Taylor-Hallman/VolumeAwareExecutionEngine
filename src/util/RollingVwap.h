@@ -62,6 +62,7 @@ public:
     [[nodiscard]] int64_t getVwap() const {
         if (m_sumQty == 0)
             return 0;
+        // + sumQty / 2 for rounding, to minimize precision loss from integer division
         return static_cast<int64_t>((m_sumPxQty + m_sumQty / 2) / m_sumQty);
     }
 
