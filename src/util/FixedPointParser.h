@@ -3,5 +3,5 @@
 #include <cstdint>
 #include <string>
 
-uint64_t parseFixedPoint(const std::string& s);
-int getFixedPointPrecision(const std::string& s);
+uint64_t parseFixedPoint(std::string_view s);
+int getFixedPointPrecision(std::string_view s);

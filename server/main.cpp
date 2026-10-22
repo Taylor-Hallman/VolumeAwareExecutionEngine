@@ -98,7 +98,8 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
         if (ready < 0) {
             if (errno == EINTR)
                 continue;
-            std::println("poll failed");
+            std::println("poll failed: {}", strerror(errno));
+            success = false;
             break;
         }
         if (ready == 0) {
