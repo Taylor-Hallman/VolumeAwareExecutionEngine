@@ -88,7 +88,7 @@ int main(int argc, char *argv[]) {
                      [](const Quote &) {
                      }, // ignore
                      [&sockfd, &shutdownFlag](const Trade &t) {
-                         std::vector<std::byte> buf(FrameHeader::SIZE + Trade::SIZE);
+                         std::array<std::byte, FrameHeader::SIZE + Trade::SIZE> buf{};
                          Encode(t, buf);
 
                          if (!sendAll(sockfd, buf)) {

@@ -179,7 +179,7 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
         __int128 cost{
             (sessionState.buy_notional - sessionVwap * sessionState.buy_qty) + (sessionVwap * sessionState.sell_qty - sessionState.sell_notional)
         };
-        long double slippage{ static_cast<double>(cost * 10'000) / static_cast<double>(sessionVwap * (sessionState.buy_qty + sessionState.sell_qty)) };
+        double slippage{ static_cast<double>(cost * 10'000) / static_cast<double>(sessionVwap * (sessionState.buy_qty + sessionState.sell_qty)) };
         std::string favorabilityStr = slippage < 0 ? "favorable" : "unfavorable";
         std::println("slippage vs VWAP\t{:.2f} bps ({})", slippage, favorabilityStr);
     }

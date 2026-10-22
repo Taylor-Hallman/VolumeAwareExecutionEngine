@@ -29,16 +29,16 @@ int main(int argc, char* argv[]) {
 
     int sockfd{ createSocket(host.data(), port) };
 
-    std::atomic shutdown{ false };
+    std::atomic shutdownFlag{ false };
 
-    replayEvents(events, shutdown, overloaded{
-        [&sockfd, &shutdown](const Quote& q) {
-            std::vector<std::byte> buf(FrameHeader::SIZE + Quote::SIZE);
+    replayEvents(events, shutdownFlag, overloaded{
+        [&sockfd, &shutdownFlag](const Quote& q) {
+            std::array<std::byte, FrameHeader::SIZE + Quote::SIZE> buf{};
             Encode(q, buf);
 
             if (!sendAll(sockfd, buf)) {
                 std::println("Could not connect to server. Closing...");
-                shutdown.store(true, std::memory_order_relaxed);
+                shutdownFlag.store(true, std::memory_order_relaxed);
             }
         },
         [](const Trade&) {} // ignore
