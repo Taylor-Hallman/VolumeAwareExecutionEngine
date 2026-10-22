@@ -2,7 +2,6 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
-#include <optional>
 #include <span>
 #include <vector>
 
@@ -23,8 +22,8 @@ constexpr int64_t  VWAP    = 1'000'000;
 constexpr uint64_t BAND    = 255'000;   // 25.5 bps, scaled x10,000
 constexpr uint64_t CAP     = 1'500;     // 0.15, scaled x10,000
 constexpr uint32_t MAX_QTY = 500;
-const std::array<char, 12> SYM{'S','Y','N','T','H','1'};
-const std::array<char, 12> OTHER_SYM{'S','Y','N','T','H','2'};
+constexpr std::array<char, 12> SYM{'S','Y','N','T','H','1'};
+constexpr std::array<char, 12> OTHER_SYM{'S','Y','N','T','H','2'};
 
 DecisionConfig makeConfig(uint64_t band = BAND) {
     return DecisionConfig{ .band_bps_scaled = band,
@@ -173,53 +172,127 @@ TEST(JudgeTradeTest, Rejects_WhenVwapIsNotPositive) {
 
 // ============================ processTradeBytes ============================
 
-TEST(ProcessTradeBytesTest, AcceptedTrade_EndToEnd) {
+namespace {
+
+// Notional accumulators may be __int128; narrow for assertions (values here are small).
+int64_t i64(__int128 v) { return static_cast<int64_t>(v); }
+
+// Feeds one chunk through processTradeBytes and returns every order delivered to the callback.
+template <std::size_t Cap>
+std::vector<NewOrder> run(std::vector<std::byte>& accum,
+                          std::span<const std::byte> bytes,
+                          const L1Snapshot& snapshot,
+                          SessionState& state,
+                          RollingVwap<Cap>& rv,
+                          std::chrono::nanoseconds elapsed = WINDOW) {
+    std::vector<NewOrder> orders;
+    processTradeBytes(accum, bytes, SYM, snapshot, state, makeConfig(), elapsed, rv,
+                      [&orders](const NewOrder& o) { orders.push_back(o); });
+    return orders;
+}
+
+constexpr int64_t TRADE_NOTIONAL = VWAP * 100;   // px * qty for makeTrade(100) at VWAP
+
+} // namespace
+
+TEST(ProcessTradeBytesTest, AcceptedBuy_EndToEnd) {
     RollingVwap<8> rv(10);
-    rv.addTick(1'000'000, VWAP, 100);          // prior print at the same price: VWAP stays 100.0000
+    rv.addTick(1'000'000, VWAP, 100);   // prior print at VWAP keeps the VWAP at 100.0000
     SessionState state = makeState();
     std::vector<std::byte> accum;
 
-    auto result = processTradeBytes(accum, encodeTrade(makeTrade(100, 7)), SYM,
-                                    BUY_QUOTE, state, makeConfig(), WINDOW, rv);
+    auto orders = run(accum, encodeTrade(makeTrade(100, 7)), BUY_QUOTE, state, rv);
 
-    ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->status, 'A');
-    EXPECT_EQ(result->side, 'B');
-    EXPECT_EQ(result->limit_px, 997'000);
-    EXPECT_EQ(result->trade_id, 7);
-    EXPECT_EQ(result->qty, 100u);
+    ASSERT_EQ(orders.size(), 1uz);
+    EXPECT_EQ(orders[0].status, 'A');
+    EXPECT_EQ(orders[0].side, 'B');
+    EXPECT_EQ(orders[0].limit_px, 997'000);
+    EXPECT_EQ(orders[0].trade_id, 7);
+    EXPECT_EQ(orders[0].qty, 100u);
+
     EXPECT_EQ(rv.getTickCount(), 2uz);
     EXPECT_EQ(state.market_volume, 1'000'100u);
+    EXPECT_EQ(i64(state.market_notional), TRADE_NOTIONAL);
     EXPECT_EQ(state.executed_qty, 100u);
+    // Notional uses the TRADE's price (1'000'000), not the order's limit_px (997'000)
+    EXPECT_EQ(i64(state.executed_notional), TRADE_NOTIONAL);
+    EXPECT_EQ(state.buy_qty, 100u);
+    EXPECT_EQ(i64(state.buy_notional), TRADE_NOTIONAL);
+    EXPECT_EQ(state.sell_qty, 0u);
+    EXPECT_EQ(i64(state.sell_notional), 0);
     EXPECT_TRUE(accum.empty());
 }
 
-TEST(ProcessTradeBytesTest, RejectedTrade_CountsMarketVolumeButNotExecuted) {
+TEST(ProcessTradeBytesTest, AcceptedSell_UpdatesSellAccumulatorsOnly) {
     RollingVwap<8> rv(10);
     rv.addTick(1'000'000, VWAP, 100);
     SessionState state = makeState();
     std::vector<std::byte> accum;
 
-    auto result = processTradeBytes(accum, encodeTrade(makeTrade(100, 7)), SYM,
-                                    NEUTRAL, state, makeConfig(), WINDOW, rv);
+    auto orders = run(accum, encodeTrade(makeTrade(100, 8)), SELL_QUOTE, state, rv);
 
-    ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->status, 'R');
-    EXPECT_EQ(state.executed_qty, 0u);
-    EXPECT_EQ(state.market_volume, 1'000'100u);
+    ASSERT_EQ(orders.size(), 1uz);
+    EXPECT_EQ(orders[0].status, 'A');
+    EXPECT_EQ(orders[0].side, 'S');
+    EXPECT_EQ(orders[0].limit_px, 1'003'000);
+
+    EXPECT_EQ(state.executed_qty, 100u);
+    EXPECT_EQ(state.sell_qty, 100u);
+    EXPECT_EQ(i64(state.sell_notional), TRADE_NOTIONAL);
+    EXPECT_EQ(state.buy_qty, 0u);
+    EXPECT_EQ(i64(state.buy_notional), 0);
 }
 
-TEST(ProcessTradeBytesTest, WarmUp_TooFewQuotes_NoOrderButVwapRecorded) {
+TEST(ProcessTradeBytesTest, RejectedTrade_CountsMarketTotalsButNotExecuted) {
+    RollingVwap<8> rv(10);
+    rv.addTick(1'000'000, VWAP, 100);
+    SessionState state = makeState();
+    std::vector<std::byte> accum;
+
+    auto orders = run(accum, encodeTrade(makeTrade(100, 7)), NEUTRAL, state, rv);
+
+    ASSERT_EQ(orders.size(), 1uz);       // a rejection is still delivered
+    EXPECT_EQ(orders[0].status, 'R');
+    EXPECT_EQ(orders[0].trade_id, 7);
+
+    EXPECT_EQ(state.market_volume, 1'000'100u);
+    EXPECT_EQ(i64(state.market_notional), TRADE_NOTIONAL);
+    EXPECT_EQ(state.executed_qty, 0u);
+    EXPECT_EQ(i64(state.executed_notional), 0);
+    EXPECT_EQ(state.buy_qty, 0u);
+    EXPECT_EQ(state.sell_qty, 0u);
+}
+
+TEST(ProcessTradeBytesTest, TradeCountsTowardMarketVolumeBeforeItIsJudged) {
+    // Pins the "count first, then judge" order. With no prior volume, the trade itself is
+    // the only market volume (100), and accepting 100 against it is 100% participation,
+    // far above the 15% cap, so it must be rejected.
+    RollingVwap<8> rv(10);
+    SessionState state = makeState(/*marketVolume=*/0, /*executed=*/0);
+    std::vector<std::byte> accum;
+
+    auto orders = run(accum, encodeTrade(makeTrade(100)), BUY_QUOTE, state, rv);
+
+    ASSERT_EQ(orders.size(), 1uz);
+    EXPECT_EQ(orders[0].status, 'R');
+    EXPECT_EQ(state.market_volume, 100u);
+}
+
+// ---------------------------- warm-up gate ----------------------------
+
+TEST(ProcessTradeBytesTest, WarmUp_TooFewQuotes_NoOrderButStateStillUpdates) {
     RollingVwap<8> rv(10);
     SessionState state = makeState();
     std::vector<std::byte> accum;
 
-    auto result = processTradeBytes(accum, encodeTrade(makeTrade(100)), SYM,
-                                    makeSnapshot(996'900, 997'000, /*quotes=*/9),
-                                    state, makeConfig(), WINDOW, rv);
+    auto orders = run(accum, encodeTrade(makeTrade(100)),
+                      makeSnapshot(996'900, 997'000, /*quotes=*/9), state, rv);
 
-    EXPECT_FALSE(result.has_value());
-    EXPECT_EQ(rv.getTickCount(), 1uz);   // trade still feeds the VWAP window
+    EXPECT_TRUE(orders.empty());
+    EXPECT_EQ(rv.getTickCount(), 1uz);                    // still feeds the VWAP window
+    EXPECT_EQ(state.market_volume, 1'000'100u);           // still counts as market volume
+    EXPECT_EQ(i64(state.market_notional), TRADE_NOTIONAL);
+    EXPECT_EQ(state.executed_qty, 0u);
 }
 
 TEST(ProcessTradeBytesTest, WarmUp_TooLittleTime_NoOrder) {
@@ -227,11 +300,12 @@ TEST(ProcessTradeBytesTest, WarmUp_TooLittleTime_NoOrder) {
     SessionState state = makeState();
     std::vector<std::byte> accum;
 
-    auto result = processTradeBytes(accum, encodeTrade(makeTrade(100)), SYM, BUY_QUOTE,
-                                    state, makeConfig(), WINDOW - std::chrono::nanoseconds{1}, rv);
+    auto orders = run(accum, encodeTrade(makeTrade(100)), BUY_QUOTE, state, rv,
+                      WINDOW - std::chrono::nanoseconds{1});
 
-    EXPECT_FALSE(result.has_value());
+    EXPECT_TRUE(orders.empty());
     EXPECT_EQ(rv.getTickCount(), 1uz);
+    EXPECT_EQ(state.market_volume, 1'000'100u);
 }
 
 TEST(ProcessTradeBytesTest, WarmUp_ExactBoundaryOpensGate) {
@@ -240,43 +314,32 @@ TEST(ProcessTradeBytesTest, WarmUp_ExactBoundaryOpensGate) {
     std::vector<std::byte> accum;
 
     // exactly 10 quotes and exactly one full window: both conditions are inclusive
-    auto result = processTradeBytes(accum, encodeTrade(makeTrade(100)), SYM,
-                                    makeSnapshot(996'900, 997'000, 10),
-                                    state, makeConfig(), WINDOW, rv);
+    auto orders = run(accum, encodeTrade(makeTrade(100)),
+                      makeSnapshot(996'900, 997'000, 10), state, rv, WINDOW);
 
-    EXPECT_TRUE(result.has_value());
+    EXPECT_EQ(orders.size(), 1uz);
 }
 
-// Encodes the interpretation that trades during warm-up still count toward market
-// volume (only the output is suppressed).
-TEST(ProcessTradeBytesTest, WarmUp_TradesStillCountTowardMarketVolume) {
-    RollingVwap<8> rv(10);
-    SessionState state = makeState();
-    std::vector<std::byte> accum;
-
-    processTradeBytes(accum, encodeTrade(makeTrade(100)), SYM,
-                      makeSnapshot(996'900, 997'000, 9), state, makeConfig(), WINDOW, rv);
-
-    EXPECT_EQ(state.market_volume, 1'000'100u);
-}
+// ---------------------------- filtering ----------------------------
 
 TEST(ProcessTradeBytesTest, OtherSymbol_IsIgnoredEntirely) {
     RollingVwap<8> rv(10);
     SessionState state = makeState();
     std::vector<std::byte> accum;
 
-    auto result = processTradeBytes(accum,
-                                    encodeTrade(makeTrade(100, 1, VWAP, 5'000'000, OTHER_SYM)),
-                                    SYM, BUY_QUOTE, state, makeConfig(), WINDOW, rv);
+    auto orders = run(accum, encodeTrade(makeTrade(100, 1, VWAP, 5'000'000, OTHER_SYM)),
+                      BUY_QUOTE, state, rv);
 
-    EXPECT_FALSE(result.has_value());
+    EXPECT_TRUE(orders.empty());
     EXPECT_EQ(rv.getTickCount(), 0uz);
     EXPECT_EQ(state.market_volume, 1'000'000u);
+    EXPECT_EQ(i64(state.market_notional), 0);
     EXPECT_EQ(state.executed_qty, 0u);
 }
 
 TEST(ProcessTradeBytesTest, NonTradeMessage_IsIgnored) {
-    // Regression guard for the get_if null-dereference class of bug
+    // Regression guard for the get_if null-dereference class of bug.
+    // (Prints a "[WARN] Expected Trade" line to stdout; that's expected.)
     Quote q{};
     q.symbol = SYM; q.ts_ns = 1; q.bid_qty = 1; q.bid_px = 1; q.ask_qty = 1; q.ask_px = 1;
 
@@ -284,13 +347,15 @@ TEST(ProcessTradeBytesTest, NonTradeMessage_IsIgnored) {
     SessionState state = makeState();
     std::vector<std::byte> accum;
 
-    auto result = processTradeBytes(accum, encodeQuote(q), SYM, BUY_QUOTE,
-                                    state, makeConfig(), WINDOW, rv);
+    auto orders = run(accum, encodeQuote(q), BUY_QUOTE, state, rv);
 
-    EXPECT_FALSE(result.has_value());
+    EXPECT_TRUE(orders.empty());
     EXPECT_EQ(rv.getTickCount(), 0uz);
     EXPECT_EQ(state.market_volume, 1'000'000u);
+    EXPECT_TRUE(accum.empty());   // the message was consumed, not left behind
 }
+
+// ---------------------------- stream reassembly ----------------------------
 
 TEST(ProcessTradeBytesTest, FragmentedTrade_ProducesOrderOnlyWhenComplete) {
     RollingVwap<8> rv(10);
@@ -299,32 +364,62 @@ TEST(ProcessTradeBytesTest, FragmentedTrade_ProducesOrderOnlyWhenComplete) {
     std::vector<std::byte> accum;
     const auto bytes = encodeTrade(makeTrade(100, 9));
 
-    auto first = processTradeBytes(accum, std::span<const std::byte>(bytes.data(), 10), SYM,
-                                   BUY_QUOTE, state, makeConfig(), WINDOW, rv);
-    EXPECT_FALSE(first.has_value());
-    EXPECT_FALSE(accum.empty());          // partial bytes retained for the next call
-    EXPECT_EQ(rv.getTickCount(), 1uz);    // nothing recorded yet
+    auto first = run(accum, std::span<const std::byte>(bytes.data(), 10), BUY_QUOTE, state, rv);
+    EXPECT_TRUE(first.empty());
+    EXPECT_FALSE(accum.empty());                 // partial bytes retained for the next call
+    EXPECT_EQ(rv.getTickCount(), 1uz);           // nothing recorded yet
+    EXPECT_EQ(state.market_volume, 1'000'000u);
 
-    auto second = processTradeBytes(accum, std::span<const std::byte>(bytes.data() + 10, bytes.size() - 10),
-                                    SYM, BUY_QUOTE, state, makeConfig(), WINDOW, rv);
-    ASSERT_TRUE(second.has_value());
-    EXPECT_EQ(second->trade_id, 9);
+    auto second = run(accum, std::span<const std::byte>(bytes.data() + 10, bytes.size() - 10),
+                      BUY_QUOTE, state, rv);
+    ASSERT_EQ(second.size(), 1uz);
+    EXPECT_EQ(second[0].trade_id, 9);
     EXPECT_TRUE(accum.empty());
     EXPECT_EQ(rv.getTickCount(), 2uz);
+    EXPECT_EQ(state.market_volume, 1'000'100u);
 }
 
-TEST(ProcessTradeBytesTest, TwoTradesInOneChunk_BothUpdateState) {
+TEST(ProcessTradeBytesTest, TwoTradesInOneChunk_BothVerdictsDeliveredInOrder) {
+    // The case the callback design exists for: the old single-return version lost the
+    // first verdict. Trade 1 (qty 100) is accepted; trade 2 (qty over the max) is rejected.
     RollingVwap<8> rv(10);
     SessionState state = makeState();
     std::vector<std::byte> accum;
 
-    auto a = encodeTrade(makeTrade(100, 1, VWAP, 5'000'000));
-    auto b = encodeTrade(makeTrade(100, 2, VWAP, 6'000'000));
-    a.insert(a.end(), b.begin(), b.end());
+    auto chunk = encodeTrade(makeTrade(100, 1, VWAP, 5'000'000));
+    auto second = encodeTrade(makeTrade(MAX_QTY + 1, 2, VWAP, 6'000'000));
+    chunk.insert(chunk.end(), second.begin(), second.end());
 
-    processTradeBytes(accum, a, SYM, NEUTRAL, state, makeConfig(), WINDOW, rv);
+    auto orders = run(accum, chunk, BUY_QUOTE, state, rv);
+
+    ASSERT_EQ(orders.size(), 2uz);
+    EXPECT_EQ(orders[0].trade_id, 1);
+    EXPECT_EQ(orders[0].status, 'A');
+    EXPECT_EQ(orders[1].trade_id, 2);
+    EXPECT_EQ(orders[1].status, 'R');
 
     EXPECT_EQ(rv.getTickCount(), 2uz);
-    EXPECT_EQ(state.market_volume, 1'000'200u);
+    EXPECT_EQ(state.market_volume, 1'000'000u + 100 + (MAX_QTY + 1));
+    EXPECT_EQ(state.executed_qty, 100u);          // only the accepted trade
+    EXPECT_EQ(state.buy_qty, 100u);
     EXPECT_TRUE(accum.empty());
+}
+
+TEST(ProcessTradeBytesTest, TwoAcceptedTradesInOneChunk_AccumulateExecutedTotals) {
+    RollingVwap<8> rv(10);
+    SessionState state = makeState();
+    std::vector<std::byte> accum;
+
+    auto chunk = encodeTrade(makeTrade(100, 1, VWAP, 5'000'000));
+    auto second = encodeTrade(makeTrade(100, 2, VWAP, 6'000'000));
+    chunk.insert(chunk.end(), second.begin(), second.end());
+
+    auto orders = run(accum, chunk, BUY_QUOTE, state, rv);
+
+    ASSERT_EQ(orders.size(), 2uz);
+    EXPECT_EQ(orders[0].status, 'A');
+    EXPECT_EQ(orders[1].status, 'A');
+    EXPECT_EQ(state.executed_qty, 200u);
+    EXPECT_EQ(i64(state.executed_notional), 2 * TRADE_NOTIONAL);
+    EXPECT_EQ(state.buy_qty, 200u);
 }
