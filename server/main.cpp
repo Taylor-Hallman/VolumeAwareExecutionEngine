@@ -111,7 +111,6 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
             continue;
         }
 
-
         ssize_t bytesReceived = recv(clientSockfd, receivedBuf.data(), receivedBuf.size(), 0);
         decisionStart = steady_clock::now();
         if (bytesReceived <= 0) {

@@ -12,12 +12,7 @@ add_library(VAEE_lib
         src/util/BytesParser.cpp
         src/decision_engine/DecisionEngine.cpp
         src/util/FixedPointParser.cpp
-        src/util/FixedPointParser.h
 )
-
-add_executable(VolumeAwareExecutionEngine main.cpp)
-
-target_link_libraries(VolumeAwareExecutionEngine PRIVATE VAEE_lib)
 
 target_include_directories(VAEE_lib PUBLIC src)
 
