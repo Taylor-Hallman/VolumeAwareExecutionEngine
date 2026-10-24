@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# run_experiments.sh: run slipstream + both clients over a parameter grid,
+# one results directory per run. Meant to be left running overnight.
+#
+#   ./run_experiments.sh
+#   BUILD_DIR=build-release CSV=data.csv ./run_experiments.sh   # override paths
+
+set -uo pipefail   # no -e: one failed run shouldn't stop the whole batch
+
+# ---------- paths (adjust to your target names) ----------
+BUILD_DIR="${BUILD_DIR:-cmake-build-release}"
+SERVER_BIN="${SERVER_BIN:-$BUILD_DIR/server/slipstream}"
+MD_BIN="${MD_BIN:-$BUILD_DIR/clients/md_client/md_client}"
+OE_BIN="${OE_BIN:-$BUILD_DIR/clients/oe_client/oe_client}"
+CSV="${CSV:-Quotes_and_Trades.csv}"
+
+# ---------- parameter grid (every combination is run) ----------
+SYMBOLS=(SYNTH1 SYNTH2 SYNTH3 SYNTH4)
+BANDS=(1 3.5 10 25.5)
+CAPS=(0.15)
+WINDOWS_MS=(30000)
+MAX_QTYS=(500)
+REPEATS=3            # repeat each combination, since runs aren't deterministic
+
+# ---------- run control ----------
+MAX_RUN_SECS=600     # after this long, type CLOSE into the server (keep > VWAP window)
+GRACE_SECS=30        # wait this long for the server to exit after CLOSE, then kill it
+STARTUP_SECS=1       # head start for the server before the clients launch
+BASE_PORT=15000      # each run gets its own pair of ports
+HOST=127.0.0.1
+
+for f in "$SERVER_BIN" "$MD_BIN" "$OE_BIN"; do
+    [[ -x $f ]] || { echo "not executable: $f" >&2; exit 1; }
+done
+[[ -f $CSV ]] || { echo "missing CSV: $CSV" >&2; exit 1; }
+
+# Line-buffer stdout so a killed process still leaves its output in the log.
+STDBUF=()
+command -v stdbuf >/dev/null && STDBUF=(stdbuf -oL)
+
+OUT_ROOT="results/$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$OUT_ROOT"
+
+{
+    echo "date:         $(date -Is)"
+    echo "host:         $(uname -srm)"
+    echo "cpu:          $(lscpu | sed -n 's/^Model name:[[:space:]]*//p')"
+    echo "governor:     $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)"
+    echo "build type:   $(grep -h '^CMAKE_BUILD_TYPE' "$BUILD_DIR/CMakeCache.txt" 2>/dev/null || echo unknown)"
+    echo "git commit:   $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    echo "csv:          $CSV"
+    echo "max run secs: $MAX_RUN_SECS"
+} > "$OUT_ROOT/env.txt"
+
+echo "run,symbol,band_bps,cap,window_ms,max_qty,rep,server_exit,md_exit,oe_exit,has_report,seconds,note" \
+    > "$OUT_ROOT/index.csv"
+
+cleanup() {
+    exec 3>&-
+    local pids; pids=$(jobs -p)
+    [[ -n $pids ]] && kill $pids 2>/dev/null
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+run_one() {
+    local n=$1 sym=$2 band=$3 cap=$4 win=$5 qty=$6 rep=$7
+    local name dir md_port oe_port
+    name=$(printf 'run%03d_%s_band%s_cap%s_win%s_qty%s_rep%s' "$n" "$sym" "$band" "$cap" "$win" "$qty" "$rep")
+    dir="$OUT_ROOT/$name"
+    md_port=$((BASE_PORT + 2 * n))
+    oe_port=$((md_port + 1))
+    mkdir -p "$dir"
+
+    local server_args=(--symbol "$sym" --max-quantity "$qty" --participation-cap "$cap"
+        --vwap-window-ms "$win" --band-bps "$band"
+        --md-host "$HOST" --md-port "$md_port" --oe-host "$HOST" --oe-port "$oe_port"
+        --transport tcp)
+    echo "${server_args[*]}" > "$dir/server_args.txt"
+
+    # Server stdin: a FIFO we keep open read/write, so it never sees EOF and
+    # we can type CLOSE into it later.
+    local fifo_dir; fifo_dir=$(mktemp -d)
+    mkfifo "$fifo_dir/stdin"
+    exec 3<>"$fifo_dir/stdin"
+
+    local start=$SECONDS note="" md_pid="" oe_pid=""
+    "${STDBUF[@]}" "$SERVER_BIN" "${server_args[@]}" <&3 >"$dir/server.log" 2>&1 &
+    local server_pid=$!
+    sleep "$STARTUP_SECS"
+
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+        note="server exited during startup"
+    else
+        "${STDBUF[@]}" "$MD_BIN" --host "$HOST" --port "$md_port" --csv "$CSV" >"$dir/md_client.log" 2>&1 &
+        md_pid=$!
+        "${STDBUF[@]}" "$OE_BIN" --host "$HOST" --port "$oe_port" --csv "$CSV" >"$dir/oe_client.log" 2>&1 &
+        oe_pid=$!
+
+        local waited=0
+        while kill -0 "$server_pid" 2>/dev/null; do
+            sleep 1
+            waited=$((waited + 1))
+            if (( waited == MAX_RUN_SECS )); then
+                echo CLOSE >&3
+                note="CLOSE sent after ${MAX_RUN_SECS}s"
+            elif (( waited >= MAX_RUN_SECS + GRACE_SECS )); then
+                kill -KILL "$server_pid" 2>/dev/null
+                note="server killed (still running ${GRACE_SECS}s after CLOSE)"
+                break
+            fi
+        done
+    fi
+    wait "$server_pid" 2>/dev/null; local server_status=$?
+
+    # Clients should exit on their own once the server closes; give them a few seconds.
+    local md_status="-" oe_status="-" pid
+    for pid in $md_pid $oe_pid; do
+        for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+        kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
+    done
+    [[ -n $md_pid ]] && { wait "$md_pid" 2>/dev/null; md_status=$?; }
+    [[ -n $oe_pid ]] && { wait "$oe_pid" 2>/dev/null; oe_status=$?; }
+
+    exec 3>&-
+    rm -rf "$fifo_dir"
+
+    local has_report=0
+    sed -n '/=== SLIPSTREAM EXECUTION REPORT ===/,$p' "$dir/server.log" > "$dir/report.txt"
+    [[ -s $dir/report.txt ]] && has_report=1
+
+    local secs=$((SECONDS - start))
+    echo "server_exit=$server_status md_exit=$md_status oe_exit=$oe_status report=$has_report seconds=$secs note=$note" \
+        > "$dir/status.txt"
+    echo "$name,$sym,$band,$cap,$win,$qty,$rep,$server_status,$md_status,$oe_status,$has_report,$secs,\"$note\"" \
+        >> "$OUT_ROOT/index.csv"
+    {
+        echo "##### $name  (server exit $server_status, ${secs}s) $note"
+        cat "$dir/report.txt"
+        echo
+    } >> "$OUT_ROOT/summary.txt"
+
+    echo "[$(date +%H:%M:%S)] $n/$total done: $name (exit $server_status, report=$has_report, ${secs}s)"
+}
+
+total=$(( ${#SYMBOLS[@]} * ${#BANDS[@]} * ${#CAPS[@]} * ${#WINDOWS_MS[@]} * ${#MAX_QTYS[@]} * REPEATS ))
+echo "Planned runs: $total; worst case about $(( total * (MAX_RUN_SECS + GRACE_SECS + STARTUP_SECS + 10) / 60 )) minutes"
+echo "Results in: $OUT_ROOT"
+
+n=0
+for sym in "${SYMBOLS[@]}"; do
+for band in "${BANDS[@]}"; do
+for cap in "${CAPS[@]}"; do
+for win in "${WINDOWS_MS[@]}"; do
+for qty in "${MAX_QTYS[@]}"; do
+for rep in $(seq 1 "$REPEATS"); do
+    n=$((n + 1))
+    run_one "$n" "$sym" "$band" "$cap" "$win" "$qty" "$rep"
+done; done; done; done; done; done
+
+echo "All runs complete."
