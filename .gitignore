@@ -1,3 +1,5 @@
 test
 run_experiments
+run_experiments_with_cpu_performance
+make_tables.py
 results/

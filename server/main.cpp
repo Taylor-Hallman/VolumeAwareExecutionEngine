@@ -37,18 +37,23 @@ static bool serveMDClient(const int clientSockfd, const std::array<char, 12> &sy
             break;
         }
 
-        processQuoteBytes(accumBuf, std::span(receivedBuf.begin(), bytesReceived), symbol, state);
+        try {
+            processQuoteBytes(accumBuf, std::span(receivedBuf.begin(), bytesReceived), symbol, state);
+        } catch (std::invalid_argument &e) {
+            std::println("{}", e.what());
+            success = false;
+            break;
+        }
     }
     close(clientSockfd);
     return success;
 }
 
-static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &symbol, const L1State &l1State,
+static void serveOEClient(const int clientSockfd, const std::array<char, 12> &symbol, const L1State &l1State,
                           RollingVwap<VWAP_CAPACITY> &vwap, SessionState &sessionState,
                           const DecisionConfig &config, std::chrono::time_point<std::chrono::steady_clock> startTime,
                           std::stop_token st, std::atomic<bool> &open) {
     constexpr auto timeoutMs{5000};
-    bool success{true};
     std::vector<std::byte> accumBuf;
     accumBuf.reserve(4096);
 
@@ -72,7 +77,11 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
                 .state = CLOSE
             };
             std::array<std::byte, FrameHeader::SIZE + SessionControl::SIZE> bytes{};
-            Encode(sc, bytes);
+            try {
+                Encode(sc, bytes);
+            } catch (std::exception& e) {
+                std::cerr << e.what() << std::endl;
+            }
             if (!sendAll(clientSockfd, bytes))
                 std::println("Failed to send close command to OE client");
             break;
@@ -85,7 +94,12 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
                 .state = state
             };
             std::array<std::byte, FrameHeader::SIZE + SessionControl::SIZE> bytes{};
-            Encode(sc, bytes);
+            try {
+                Encode(sc, bytes);
+            } catch (std::exception& e) {
+                std::cerr << e.what() << std::endl;
+                break;
+            }
             if (!sendAll(clientSockfd, bytes)) {
                 std::string stateStr = state == OPEN ? "open" : "halt";
                 std::println("Failed to send {} command to OE client", stateStr);
@@ -99,7 +113,6 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
             if (errno == EINTR)
                 continue;
             std::println("poll failed: {}", strerror(errno));
-            success = false;
             break;
         }
         if (ready == 0) {
@@ -116,7 +129,7 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
         decisionStart = steady_clock::now();
         if (bytesReceived <= 0) {
             if (bytesReceived < 0)
-                success = false;
+                std::println("recv failed: {}", strerror(errno));
             break;
         }
         L1Snapshot snapshot{};
@@ -127,9 +140,10 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
             snapshot.quotesObserved = l1State.quotesObserved;
         }
 
-        auto onOrderReceived = [&](const NewOrder& order) {
+        auto onOrderReceived = [&](NewOrder& order) {
             if (isOpen) {
                 std::array<std::byte, FrameHeader::SIZE + NewOrder::SIZE> bytes{};
+                order.ts_ns += static_cast<uint64_t>((steady_clock::now() - decisionStart).count());
                 Encode(order, bytes);
                 decisionEnd = steady_clock::now();
                 tickToOrderTimes.push_back(duration_cast<nanoseconds>(decisionEnd - decisionStart).count());
@@ -145,8 +159,13 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
         };
 
         const auto timeElapsed{steady_clock::now() - startTime};
-        processTradeBytes(accumBuf, std::span(receivedBuf.begin(), bytesReceived), symbol, snapshot,
-            sessionState, config, timeElapsed, vwap, onOrderReceived);
+        try {
+            processTradeBytes(accumBuf, std::span(receivedBuf.begin(), bytesReceived), symbol, snapshot,
+                sessionState, config, timeElapsed, vwap, onOrderReceived);
+        } catch (std::exception& e) {
+            std::cerr << e.what() << std::endl;
+            break;
+        }
     }
     close(clientSockfd);
 
@@ -169,7 +188,7 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
     std::println("avg fill price\t\t{:.2f}", avgFill);
 
     int64_t sessionVwap{
-        sessionState.executed_qty == 0 ? 0
+        sessionState.market_volume == 0 ? 0
         : static_cast<int64_t>((sessionState.market_notional + sessionState.market_volume / 2) / sessionState.market_volume)
     };
     std::println("session VWAP\t\t{}", sessionVwap);
@@ -186,8 +205,8 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
     }
 
     std::println("participation\t\t{:.2f}% (cap {:.2f}%)",
-        static_cast<double>(sessionState.executed_qty) / static_cast<double>(sessionState.market_volume),
-        static_cast<double>(config.participation_cap_scaled) / 10'000.0
+        static_cast<double>(sessionState.executed_qty) / static_cast<double>(sessionState.market_volume) * 100.0,
+        static_cast<double>(config.participation_cap_scaled) / 100.0
         );
 
     std::ranges::sort(tickToOrderTimes);
@@ -198,8 +217,6 @@ static bool serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
     std::println("tick-to-order p50\t{} us", p50 / 1000.0);
     std::println("tick-to-order p99\t{} us", p99 / 1000.0);
     std::println("tick-to-order p99.9\t{} us", p999 / 1000.0);
-
-    return success;
 }
 
 static int createListeningSocket(int port) {

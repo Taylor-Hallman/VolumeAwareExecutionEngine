@@ -12,5 +12,5 @@ struct Trade {
     uint32_t qty;
     int64_t px;
     char aggressor; // 'B', 'S', or '?' if unknown
-    int64_t id{ s_next_id++ };
+    int64_t id{ s_next_id.fetch_add(1, std::memory_order_relaxed) };
 };

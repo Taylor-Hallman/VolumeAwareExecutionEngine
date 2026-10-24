@@ -50,36 +50,40 @@ int main(int argc, char *argv[]) {
                     break;
                 }
 
-                processBytes(accumBuf, std::span(buf.begin(), bytesReceived),
-                    [&shutdownFlag](const Message& msg) {
-                    if (const auto* hb{ std::get_if<Heartbeat>(&msg) }) {
-                        std::println("Received heartbeat at timestamp {}", hb->ts_ns);
-                    }
-                    else if (const auto* newOrder{ std::get_if<NewOrder>(&msg) }) {
-                        if (newOrder->status == 'A') {
-                            std::string sideStr = newOrder->side == 'B' ? "Buy" : "Sell";
-                            std::println("Trade {0} accepted at side {1}", newOrder->trade_id, sideStr);
+                try {
+                    processBytes(accumBuf, std::span(buf.begin(), bytesReceived),
+                        [&shutdownFlag](const Message& msg) {
+                        if (const auto* hb{ std::get_if<Heartbeat>(&msg) }) {
+                            std::println("Received heartbeat at timestamp {}", hb->ts_ns);
                         }
-                        else
-                            std::println("Trade {} rejected", newOrder->trade_id);
-                    }
-                    else if (const auto* sc{ std::get_if<SessionControl>(&msg) }) {
-                        switch (sc->state) {
-                            case OPEN:
-                                std::println("Received command: OPEN");
-                                break;
-                            case HALT:
-                                std::println("Received command: HALT");
-                                break;
-                            case CLOSE:
-                                std::println("Received command: CLOSE");
-                                shutdownFlag.store(true, std::memory_order_relaxed);
-                                break;
-                            default:
-                                std::println("Received unknown command");
+                        else if (const auto* newOrder{ std::get_if<NewOrder>(&msg) }) {
+                            if (newOrder->status == 'A') {
+                                std::string sideStr = newOrder->side == 'B' ? "Buy" : "Sell";
+                                std::println("Trade {0} accepted at side {1}", newOrder->trade_id, sideStr);
+                            }
+                            else
+                                std::println("Trade {} rejected", newOrder->trade_id);
                         }
-                    }
-                });
+                        else if (const auto* sc{ std::get_if<SessionControl>(&msg) }) {
+                            switch (sc->state) {
+                                case OPEN:
+                                    std::println("Received command: OPEN");
+                                    break;
+                                case HALT:
+                                    std::println("Received command: HALT");
+                                    break;
+                                case CLOSE:
+                                    std::println("Received command: CLOSE");
+                                    shutdownFlag.store(true, std::memory_order_relaxed);
+                                    break;
+                                default:
+                                    std::println("Received unknown command");
+                            }
+                        }
+                    });
+                } catch (const std::exception& e) {
+                    std::cerr << e.what() << std::endl;
+                }
             }
         }
     };
@@ -89,7 +93,11 @@ int main(int argc, char *argv[]) {
                      }, // ignore
                      [&sockfd, &shutdownFlag](const Trade &t) {
                          std::array<std::byte, FrameHeader::SIZE + Trade::SIZE> buf{};
-                         Encode(t, buf);
+                         try {
+                             Encode(t, buf);
+                         } catch (const std::exception& e) {
+                             std::cerr << e.what() << std::endl;
+                         }
 
                          if (!sendAll(sockfd, buf)) {
                              std::println("Could not connect to server. Closing...");

@@ -34,8 +34,12 @@ int main(int argc, char* argv[]) {
     replayEvents(events, shutdownFlag, overloaded{
         [&sockfd, &shutdownFlag](const Quote& q) {
             std::array<std::byte, FrameHeader::SIZE + Quote::SIZE> buf{};
-            Encode(q, buf);
-
+            try {
+                Encode(q, buf);
+            }
+            catch (const std::exception& e) {
+                std::cerr << e.what() << std::endl;
+            }
             if (!sendAll(sockfd, buf)) {
                 std::println("Could not connect to server. Closing...");
                 shutdownFlag.store(true, std::memory_order_relaxed);
