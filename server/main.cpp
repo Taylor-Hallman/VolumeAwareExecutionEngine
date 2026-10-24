@@ -24,29 +24,28 @@ static uint64_t getTimestamp(std::chrono::time_point<std::chrono::steady_clock> 
     return static_cast<uint64_t>(elapsed.count());
 }
 
-static bool serveMDClient(const int clientSockfd, const std::array<char, 12> &symbol, L1State &state,
+static void serveMDClient(const int clientSockfd, const std::array<char, 12> &symbol, L1State &state,
                           std::stop_token st) {
-    bool success{true};
     std::vector<std::byte> accumBuf;
     std::array<std::byte, 1024> receivedBuf{};
-    while (!st.stop_requested()) {
-        ssize_t bytesReceived = recv(clientSockfd, receivedBuf.data(), receivedBuf.size(), 0);
-        if (bytesReceived <= 0) {
-            if (bytesReceived < 0)
-                success = false;
-            break;
-        }
 
-        try {
-            processQuoteBytes(accumBuf, std::span(receivedBuf.begin(), bytesReceived), symbol, state);
-        } catch (std::invalid_argument &e) {
-            std::println("{}", e.what());
-            success = false;
-            break;
+    {
+        std::stop_callback wake(st, [clientSockfd] { shutdown(clientSockfd, SHUT_RD); });
+        while (!st.stop_requested()) {
+            ssize_t bytesReceived = recv(clientSockfd, receivedBuf.data(), receivedBuf.size(), 0);
+            if (bytesReceived <= 0) {
+                break;
+            }
+
+            try {
+                processQuoteBytes(accumBuf, std::span(receivedBuf.begin(), bytesReceived), symbol, state);
+            } catch (std::invalid_argument &e) {
+                std::println("{}", e.what());
+                break;
+            }
         }
     }
     close(clientSockfd);
-    return success;
 }
 
 static void serveOEClient(const int clientSockfd, const std::array<char, 12> &symbol, const L1State &l1State,
@@ -65,12 +64,91 @@ static void serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
 
     using namespace std::chrono;
     std::vector<uint64_t> tickToOrderTimes;
-    std::vector<NewOrder> acceptedOrders;
 
     std::array<std::byte, 1024> receivedBuf{};
 
-    while (true) {
-        time_point<steady_clock> decisionStart, decisionEnd;
+    {
+        std::stop_callback wake(st, [clientSockfd] { shutdown(clientSockfd, SHUT_RD); });
+        while (!st.stop_requested()) {
+            time_point<steady_clock> decisionStart, decisionEnd;
+
+            if (const bool bl{open.load(std::memory_order_relaxed)}; bl != isOpen) {
+                const uint8_t state = bl ? OPEN : HALT;
+                SessionControl sc{
+                    .ts_ns = getTimestamp(startTime),
+                    .state = state
+                };
+                std::array<std::byte, FrameHeader::SIZE + SessionControl::SIZE> bytes{};
+                try {
+                    Encode(sc, bytes);
+                } catch (std::exception &e) {
+                    std::cerr << e.what() << std::endl;
+                    break;
+                }
+                if (!sendAll(clientSockfd, bytes)) {
+                    std::string stateStr = state == OPEN ? "open" : "halt";
+                    std::println("Failed to send {} command to OE client", stateStr);
+                }
+                isOpen = bl;
+            }
+
+            int ready{poll(&pfd, 1, timeoutMs)};
+
+            if (ready < 0) {
+                if (errno == EINTR)
+                    continue;
+                std::println("poll failed: {}", strerror(errno));
+                break;
+            }
+            if (ready == 0) {
+                // Timed out after 5 seconds; send a heartbeat
+                Heartbeat hb{.ts_ns = getTimestamp(startTime)};
+                std::array<std::byte, FrameHeader::SIZE + Heartbeat::SIZE> bytes{};
+                Encode(hb, bytes);
+                if (!sendAll(clientSockfd, bytes))
+                    std::println("Failed to send heartbeat to OE client");
+                continue;
+            }
+
+            ssize_t bytesReceived = recv(clientSockfd, receivedBuf.data(), receivedBuf.size(), 0);
+            decisionStart = steady_clock::now();
+            if (bytesReceived <= 0) {
+                if (bytesReceived < 0) {
+                    if (errno == EINTR)
+                        continue;
+                    std::println("recv failed: {}", strerror(errno));
+                }
+                break;
+            }
+            L1Snapshot snapshot{};
+            {
+                std::scoped_lock lock(l1State.stateMutex);
+                snapshot.best_ask_px = l1State.ask_px;
+                snapshot.best_bid_px = l1State.bid_px;
+                snapshot.quotesObserved = l1State.quotesObserved;
+            }
+
+            auto onOrderReceived = [&](NewOrder &order) {
+                if (isOpen) {
+                    std::array<std::byte, FrameHeader::SIZE + NewOrder::SIZE> bytes{};
+                    order.ts_ns += static_cast<uint64_t>((steady_clock::now() - decisionStart).count());
+                    Encode(order, bytes);
+                    decisionEnd = steady_clock::now();
+                    tickToOrderTimes.push_back(duration_cast<nanoseconds>(decisionEnd - decisionStart).count());
+                    if (!sendAll(clientSockfd, bytes))
+                        std::println("Failed to send new order to OE client");
+                }
+            };
+
+            const auto timeElapsed{steady_clock::now() - startTime};
+            try {
+                processTradeBytes(accumBuf, std::span(receivedBuf.begin(), bytesReceived), symbol, snapshot,
+                                  sessionState, config, timeElapsed, vwap, onOrderReceived);
+            } catch (std::exception &e) {
+                std::cerr << e.what() << std::endl;
+                break;
+            }
+        }
         if (st.stop_requested()) {
             SessionControl sc{
                 .ts_ns = getTimestamp(startTime),
@@ -79,92 +157,11 @@ static void serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
             std::array<std::byte, FrameHeader::SIZE + SessionControl::SIZE> bytes{};
             try {
                 Encode(sc, bytes);
-            } catch (std::exception& e) {
+            } catch (std::exception &e) {
                 std::cerr << e.what() << std::endl;
             }
             if (!sendAll(clientSockfd, bytes))
                 std::println("Failed to send close command to OE client");
-            break;
-        }
-
-        if (const bool bl{open.load(std::memory_order_relaxed)}; bl != isOpen) {
-            const uint8_t state = bl ? OPEN : HALT;
-            SessionControl sc{
-                .ts_ns = getTimestamp(startTime),
-                .state = state
-            };
-            std::array<std::byte, FrameHeader::SIZE + SessionControl::SIZE> bytes{};
-            try {
-                Encode(sc, bytes);
-            } catch (std::exception& e) {
-                std::cerr << e.what() << std::endl;
-                break;
-            }
-            if (!sendAll(clientSockfd, bytes)) {
-                std::string stateStr = state == OPEN ? "open" : "halt";
-                std::println("Failed to send {} command to OE client", stateStr);
-            }
-            isOpen = bl;
-        }
-
-        int ready{poll(&pfd, 1, timeoutMs)};
-
-        if (ready < 0) {
-            if (errno == EINTR)
-                continue;
-            std::println("poll failed: {}", strerror(errno));
-            break;
-        }
-        if (ready == 0) {
-            // Timed out after 5 seconds; send a heartbeat
-            Heartbeat hb{.ts_ns = getTimestamp(startTime)};
-            std::array<std::byte, FrameHeader::SIZE + Heartbeat::SIZE> bytes{};
-            Encode(hb, bytes);
-            if (!sendAll(clientSockfd, bytes))
-                std::println("Failed to send heartbeat to OE client");
-            continue;
-        }
-
-        ssize_t bytesReceived = recv(clientSockfd, receivedBuf.data(), receivedBuf.size(), 0);
-        decisionStart = steady_clock::now();
-        if (bytesReceived <= 0) {
-            if (bytesReceived < 0)
-                std::println("recv failed: {}", strerror(errno));
-            break;
-        }
-        L1Snapshot snapshot{};
-        {
-            std::scoped_lock lock(l1State.stateMutex);
-            snapshot.best_ask_px = l1State.ask_px;
-            snapshot.best_bid_px = l1State.bid_px;
-            snapshot.quotesObserved = l1State.quotesObserved;
-        }
-
-        auto onOrderReceived = [&](NewOrder& order) {
-            if (isOpen) {
-                std::array<std::byte, FrameHeader::SIZE + NewOrder::SIZE> bytes{};
-                order.ts_ns += static_cast<uint64_t>((steady_clock::now() - decisionStart).count());
-                Encode(order, bytes);
-                decisionEnd = steady_clock::now();
-                tickToOrderTimes.push_back(duration_cast<nanoseconds>(decisionEnd - decisionStart).count());
-                if (!sendAll(clientSockfd, bytes))
-                    std::println("Failed to send new order to OE client");
-                else {
-                    if (order.status == 'A')
-                        acceptedOrders.push_back(order);
-                    std::println("New order sent");
-                }
-            } else
-                std::println("No new order sent (halted)");
-        };
-
-        const auto timeElapsed{steady_clock::now() - startTime};
-        try {
-            processTradeBytes(accumBuf, std::span(receivedBuf.begin(), bytesReceived), symbol, snapshot,
-                sessionState, config, timeElapsed, vwap, onOrderReceived);
-        } catch (std::exception& e) {
-            std::cerr << e.what() << std::endl;
-            break;
         }
     }
     close(clientSockfd);
@@ -179,44 +176,55 @@ static void serveOEClient(const int clientSockfd, const std::array<char, 12> &sy
     std::println("market qty\t\t\t{}", sessionState.market_volume);
 
     std::println("executed qty\t\t{} ({:.2f}%)", sessionState.executed_qty,
-        static_cast<double>(sessionState.executed_qty) / static_cast<double>(sessionState.market_volume) * 100.0);
+                 static_cast<double>(sessionState.executed_qty) / static_cast<double>(sessionState.market_volume) *
+                 100.0);
 
-    long double avgFill{
-        sessionState.executed_qty == 0 ? 0
-        : static_cast<double>(sessionState.executed_notional) / static_cast<double>(sessionState.executed_qty)
+    double avgFill{
+        sessionState.executed_qty == 0
+            ? 0
+            : static_cast<double>(sessionState.executed_notional) / static_cast<double>(sessionState.executed_qty)
     };
-    std::println("avg fill price\t\t{:.2f}", avgFill);
+    std::println("avg fill price\t\t{:.4f}", avgFill / 10'000.0);
 
     int64_t sessionVwap{
-        sessionState.market_volume == 0 ? 0
-        : static_cast<int64_t>((sessionState.market_notional + sessionState.market_volume / 2) / sessionState.market_volume)
+        sessionState.market_volume == 0
+            ? 0
+            : static_cast<int64_t>((sessionState.market_notional + sessionState.market_volume / 2) / sessionState.
+                                   market_volume)
     };
-    std::println("session VWAP\t\t{}", sessionVwap);
+    std::println("session VWAP\t\t{:.4f}", static_cast<double>(sessionVwap) / 10'000.0);
 
     if (sessionState.executed_qty == 0 || sessionVwap == 0)
         std::println("slippage vs VWAP\tn/a");
     else {
         __int128 cost{
-            (sessionState.buy_notional - sessionVwap * sessionState.buy_qty) + (sessionVwap * sessionState.sell_qty - sessionState.sell_notional)
+            (sessionState.buy_notional - sessionVwap * sessionState.buy_qty) + (
+                sessionVwap * sessionState.sell_qty - sessionState.sell_notional)
         };
-        double slippage{ static_cast<double>(cost * 10'000) / static_cast<double>(sessionVwap * (sessionState.buy_qty + sessionState.sell_qty)) };
+        double slippage{
+            static_cast<double>(cost * 10'000) / static_cast<double>(
+                sessionVwap * (sessionState.buy_qty + sessionState.sell_qty))
+        };
         std::string favorabilityStr = slippage < 0 ? "favorable" : "unfavorable";
         std::println("slippage vs VWAP\t{:.2f} bps ({})", slippage, favorabilityStr);
     }
 
     std::println("participation\t\t{:.2f}% (cap {:.2f}%)",
-        static_cast<double>(sessionState.executed_qty) / static_cast<double>(sessionState.market_volume) * 100.0,
-        static_cast<double>(config.participation_cap_scaled) / 100.0
-        );
+                 static_cast<double>(sessionState.executed_qty) / static_cast<double>(sessionState.market_volume) *
+                 100.0,
+                 static_cast<double>(config.participation_cap_scaled) / 100.0
+    );
 
     std::ranges::sort(tickToOrderTimes);
     auto n{tickToOrderTimes.size()};
-    uint64_t p50{tickToOrderTimes[(n * 50 + 99) / 100 - 1]};
-    uint64_t p99{tickToOrderTimes[(n * 99 + 99) / 100 - 1]};
-    uint64_t p999{tickToOrderTimes[(n * 999 + 999) / 1000 - 1]};
-    std::println("tick-to-order p50\t{} us", p50 / 1000.0);
-    std::println("tick-to-order p99\t{} us", p99 / 1000.0);
-    std::println("tick-to-order p99.9\t{} us", p999 / 1000.0);
+    if (n > 0) {
+        uint64_t p50{tickToOrderTimes[(n * 50 + 99) / 100 - 1]};
+        uint64_t p99{tickToOrderTimes[(n * 99 + 99) / 100 - 1]};
+        uint64_t p999{tickToOrderTimes[(n * 999 + 999) / 1000 - 1]};
+        std::println("tick-to-order p50\t{} us", p50 / 1000.0);
+        std::println("tick-to-order p99\t{} us", p99 / 1000.0);
+        std::println("tick-to-order p99.9\t{} us", p999 / 1000.0);
+    }
 }
 
 static int createListeningSocket(int port) {
@@ -295,73 +303,124 @@ int main(int argc, char *argv[]) {
 
     std::atomic open{true};
 
-    std::jthread mdThread([&](std::stop_token st) {
-        sockaddr_in clientAddr{};
-        socklen_t len{sizeof(clientAddr)};
+    std::stop_source session;
 
-        std::println("Waiting for MD Client...");
-        int clientSockfd{accept(mdSockfd, reinterpret_cast<sockaddr *>(&clientAddr), &len)};
-        if (clientSockfd < 0)
-            throw std::runtime_error("accept failed");
-        std::println("Connected to MD Client");
-        mdClientConnected.store(true, std::memory_order_relaxed);
-        std::array<char, 12> symbolArr{};
-        size_t n = std::min(12uz, symbol.size());
-        std::copy_n(symbol.data(), n, symbolArr.begin());
+    auto runGuarded = [&](const char *name, auto &&body) {
+        try { body(); } catch (std::exception &e) {
+            std::println(stderr, "[{}] error: {}", name, e.what());
+        } catch (...) {
+            std::println(stderr, "[{}] unknown error", name);
+        }
+        session.request_stop();
+    };
 
-        while (!oeClientConnected.load(std::memory_order_relaxed)) // wait for OE client to connect
-            std::this_thread::yield();
+    std::stop_callback wakeMdAccept(session.get_token(), [mdSockfd] { shutdown(mdSockfd, SHUT_RD); });
+    std::stop_callback wakeOeAccept(session.get_token(), [oeSockfd] { shutdown(oeSockfd, SHUT_RD); });
 
-        serveMDClient(clientSockfd, symbolArr, state, std::move(st));
+    std::jthread mdThread([&](const std::stop_token &) {
+        runGuarded("MD Thread", [&] {
+            sockaddr_in clientAddr{};
+            socklen_t len{sizeof(clientAddr)};
+
+            std::println("Waiting for MD Client...");
+            int clientSockfd{accept(mdSockfd, reinterpret_cast<sockaddr *>(&clientAddr), &len)};
+            if (clientSockfd < 0)
+                throw std::runtime_error("accept failed");
+            std::println("Connected to MD Client");
+            mdClientConnected.store(true, std::memory_order_relaxed);
+            std::array<char, 12> symbolArr{};
+            size_t n = std::min(12uz, symbol.size());
+            std::copy_n(symbol.data(), n, symbolArr.begin());
+
+            while (!oeClientConnected.load(std::memory_order_relaxed)) {
+                std::this_thread::yield();
+                if (session.stop_requested())
+                    return;
+            }
+
+            serveMDClient(clientSockfd, symbolArr, state, std::move(session.get_token()));
+        });
     });
 
-    std::jthread oeThread([&](std::stop_token st) {
-        sockaddr_in clientAddr{};
-        socklen_t len{sizeof(clientAddr)};
+    std::jthread oeThread([&](const std::stop_token &) {
+        runGuarded("OE Thread", [&] {
+            sockaddr_in clientAddr{};
+            socklen_t len{sizeof(clientAddr)};
 
-        std::println("Waiting for OE Client...");
-        int clientSockfd{accept(oeSockfd, reinterpret_cast<sockaddr *>(&clientAddr), &len)};
-        if (clientSockfd < 0)
-            throw std::runtime_error("accept failed");
-        std::println("Connected to OE Client");
-        oeClientConnected.store(true, std::memory_order_relaxed);
-        std::array<char, 12> symbolArr{};
-        size_t n = std::min(12uz, symbol.size());
-        std::copy_n(symbol.data(), n, symbolArr.begin());
+            std::println("Waiting for OE Client...");
+            int clientSockfd{accept(oeSockfd, reinterpret_cast<sockaddr *>(&clientAddr), &len)};
+            if (clientSockfd < 0)
+                throw std::runtime_error("accept failed");
+            std::println("Connected to OE Client");
+            oeClientConnected.store(true, std::memory_order_relaxed);
+            std::array<char, 12> symbolArr{};
+            size_t n = std::min(12uz, symbol.size());
+            std::copy_n(symbol.data(), n, symbolArr.begin());
 
-        while (!mdClientConnected.load(std::memory_order_relaxed)) // wait for MD client to connect
-            std::this_thread::yield();
+            while (!mdClientConnected.load(std::memory_order_relaxed)) {
+                std::this_thread::yield();
+                if (session.stop_requested())
+                    return;
+            }
 
-        auto timeStart{std::chrono::steady_clock::now()};
-        serveOEClient(clientSockfd, symbolArr, state, vwap, sessionState, config, timeStart, std::move(st), open);
+            auto timeStart{std::chrono::steady_clock::now()};
+            serveOEClient(clientSockfd, symbolArr, state, vwap, sessionState, config, timeStart,
+                          std::move(session.get_token()), open);
+        });
     });
 
     std::thread consoleInputThread([&] {
-        while (true) {
-            std::string input{};
-            std::cin >> input;
+        pollfd pfd{};
+        pfd.fd = STDIN_FILENO;
+        pfd.events = POLLIN;
 
-            if (input == "OPEN") {
-                if (open.load(std::memory_order_relaxed))
-                    std::println("Already open!");
-                else {
-                    std::println("Now open for new orders");
-                    open.store(true, std::memory_order_relaxed);
-                }
-            } else if (input == "HALT") {
-                if (!open.load(std::memory_order_relaxed))
-                    std::println("Already halted!");
-                else {
-                    std::println("Halting new order messages...");
-                    open.store(false, std::memory_order_relaxed);
-                }
-            } else if (input == "CLOSE") {
-                std::println("Closing connection...");
-                mdThread.request_stop();
-                oeThread.request_stop();
+        std::string pending;
+        char chunk[256];
+        const std::stop_token &st = session.get_token();
+        while (!st.stop_requested()) {
+            int ready = poll(&pfd, 1, 200);
+            if (ready < 0) {
+                if (errno == EINTR) continue;
                 break;
-            } else {
-                std::println("Command not recognized");
+            }
+            if (ready == 0) continue;
+            if (pfd.revents & (POLLIN | POLLHUP)) {
+                ssize_t n = read(STDIN_FILENO, chunk, sizeof chunk);
+                if (n < 0) {
+                    if (errno == EINTR) continue;
+                    break;
+                }
+                if (n == 0) break; // EOF: stdin closed, so stop reading it
+                pending.append(chunk, static_cast<size_t>(n));
+
+                for (size_t nl; (nl = pending.find('\n')) != std::string::npos;) {
+                    std::string input = pending.substr(0, nl);
+                    pending.erase(0, nl + 1);
+
+                    if (input == "OPEN") {
+                        if (open.load(std::memory_order_relaxed))
+                            std::println("Already open!");
+                        else {
+                            std::println("Now open for new orders");
+                            open.store(true, std::memory_order_relaxed);
+                        }
+                    } else if (input == "HALT") {
+                        if (!open.load(std::memory_order_relaxed))
+                            std::println("Already halted!");
+                        else {
+                            std::println("Halting new order messages...");
+                            open.store(false, std::memory_order_relaxed);
+                        }
+                    } else if (input == "CLOSE") {
+                        std::println("Closing connection...");
+                        session.request_stop();
+                        break;
+                    } else {
+                        std::println("Command not recognized");
+                    }
+                }
+            } else if (pfd.revents & (POLLERR | POLLNVAL)) {
+                break;
             }
         }
     });
